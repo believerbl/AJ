@@ -1,0 +1,12 @@
+llama-cpp-python
+chromadb
+sentence-transformers
+duckduckgo-search
+pyautogui
+pillow
+pynput
+peft
+torch
+transformers
+bitsandbytes
+accelerate

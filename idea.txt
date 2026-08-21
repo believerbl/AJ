@@ -1,0 +1,6 @@
+well my Ai will be an AI that will be solely trained by me, from the zero
+a totally new LLM, my personal LLM
+every time i send some text to it, it will search the web for info, give answer based on that info and then also get trained from there
+i need a big enough llm model to train from zero so that its final cutoff will be equal to gemeni or more than that
+
+and maybe one more feature i want that whenever my laptop is open and doing nothing it starts its program in background and starts training itself
