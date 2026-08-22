@@ -1,7 +1,7 @@
 llama-cpp-python
 chromadb
 sentence-transformers
-duckduckgo-search
+ddgs
 pyautogui
 pillow
 pynput
