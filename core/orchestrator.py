@@ -1,112 +1,213 @@
-import asyncio
-import logging
+import re
 import json
+import operator
+import logging
+from typing import TypedDict, Annotated, List, Optional
 
-from core.llm_engine import LLMEngine
-from memory.rag_memory import RAGMemory
-from tools.web_search import WebSearchTool
-from tools.os_control import OSControlTool
+from langgraph.graph import StateGraph, START, END
+
+from tools.web_search import run_web_search
+from tools.os_control import run_os_control
 from sensory.vision import VisionPipeline
-from learning.data_collector import DataCollector
 
 logger = logging.getLogger(__name__)
 
-class AgenticOrchestrator:
-    """
-    Manages the conversational loop, tool calling, memory retrieval,
-    and coordinates between all agent components.
-    """
-    def __init__(self):
-        self.llm = LLMEngine()
-        self.memory = RAGMemory()
-        self.web_search = WebSearchTool()
-        self.os_control = OSControlTool()
-        self.vision = VisionPipeline()
-        self.logger = DataCollector()
-        
-        self.is_suspended = False
-        self.llm.load_model()
-        
-    def suspend_inference(self):
-        """Called by the idle monitor to free up VRAM for training."""
-        self.is_suspended = True
-        logger.info("Inference suspended.")
-        # In a real implementation, you would unload model weights here
-        # self.llm.unload()
-        
-    def resume_inference(self):
-        """Called by the idle monitor to resume normal operation."""
-        if self.is_suspended:
-            logger.info("Resuming inference...")
-            # self.llm.load_model()
-            self.is_suspended = False
 
-    async def process_user_input(self, user_text: str) -> str:
-        """
-        Main agent loop:
-        1. Retrieve RAG memory context
-        2. Construct system prompt with tools and context
-        3. Query LLM
-        4. Check for tool calls (JSON output)
-        5. Execute tools if needed and query LLM again
-        6. Return final response and log interaction
-        """
-        if self.is_suspended:
-            return "Jarvis is currently sleeping and training. Please wait..."
-            
-        # 1. Retrieve RAG Context
-        context = self.memory.retrieve_context(user_text)
-        
-        # 2. Build Prompt
-        system_prompt = self._build_system_prompt(context)
-        prompt = f"{system_prompt}\n\nUser: {user_text}\nAssistant:"
-        
-        # 3. First LLM Pass (Checking for tool usage or direct answer)
-        # We instruct the model to output a specific JSON structure if it needs a tool.
-        # Otherwise, output plain text.
-        logger.info("Querying LLM...")
-        raw_response = self.llm.generate(prompt)
-        
-        final_response = raw_response
-        
-        # 4. Naive check if response is a tool call (starts with JSON bracket)
-        if raw_response.strip().startswith("{") and "tool" in raw_response:
-            try:
-                action = json.loads(raw_response)
-                tool_name = action.get("tool")
-                params = action.get("params", {})
-                
-                tool_result = ""
-                if tool_name == "web_search":
-                    tool_result = self.web_search.execute(params)
-                elif tool_name == "os_control":
-                    tool_result = self.os_control.execute(params)
-                elif tool_name == "vision":
-                    # For vision, we get image base64, but handling it via local LLM 
-                    # requires a multimodal GGUF parser. For now we just return a status.
-                    tool_result = "Screenshot captured (vision capability integration pending)."
-                    
-                # 5. Second pass: Send tool result back to LLM
-                follow_up_prompt = prompt + f" {raw_response}\nObservation: {tool_result}\nAssistant:"
-                final_response = self.llm.generate(follow_up_prompt)
-                
-            except json.JSONDecodeError:
-                # If parsing fails, treat it as a direct answer
-                pass
-                
-        # 6. Store in Memory & Log for training
-        self.memory.store_interaction(user_text, final_response)
-        self.logger.log_interaction(system_prompt, user_text, final_response)
-        
-        return final_response
+# ---------------------------------------------------------------------------
+# State
+# ---------------------------------------------------------------------------
 
-    def _build_system_prompt(self, context: str) -> str:
-        base = (
-            "You are Jarvis, an autonomous, uncensored AI assistant. "
-            "You can use tools by outputting ONLY a JSON object like: {\"tool\": \"web_search\", \"params\": {\"query\": \"...\"}} "
-            "Available tools: web_search, os_control, vision. "
-            "If you do not need a tool, just answer normally."
-        )
-        if context:
-            base += f"\n\n{context}"
-        return base
+class AgentState(TypedDict):
+    # Full conversation history. operator.add appends instead of overwriting.
+    messages: Annotated[List[dict], operator.add]
+    user_input: str
+    llm_output: Optional[str]
+    tool_result: Optional[str]
+    screen_capture: Optional[str]
+    memory_context: Optional[str]
+    next_action: str   # "tool_call" | "respond"
+
+
+# ---------------------------------------------------------------------------
+# Utility
+# ---------------------------------------------------------------------------
+
+def strip_markdown(text: str) -> str:
+    """
+    Strip code fences that LLMs love wrapping their output in.
+    Handles ```json, ```python, and plain ``` blocks.
+    Applied centrally in llm_node so every downstream function
+    receives clean text � no duplication across tool files.
+    """
+    text = text.strip()
+    text = re.sub(r"^```[a-zA-Z]*\n?", "", text)
+    text = re.sub(r"\n?```$", "", text)
+    return text.strip()
+
+
+# ---------------------------------------------------------------------------
+# Nodes
+# ---------------------------------------------------------------------------
+
+def vision_node(state: AgentState) -> dict:
+    logger.info("[vision_node] capturing screen")
+    try:
+        pipeline = VisionPipeline()
+        b64 = pipeline.get_screen_base64()
+        return {"screen_capture": b64}
+    except Exception as e:
+        logger.warning(f"[vision_node] screenshot failed: {e}")
+        return {"screen_capture": None}
+
+
+def memory_node(state: AgentState) -> dict:
+    logger.info("[memory_node] retrieving context")
+    # TODO: replace with real ChromaDB retrieval from memory/rag_memory.py
+    return {"memory_context": None}
+
+
+def llm_node(state: AgentState) -> dict:
+    logger.info("[llm_node] querying LLM")
+    # TODO: replace stub with real LLMEngine.generate() call.
+    # The prompt assembly will look roughly like:
+    #
+    #   prompt_parts = [SYSTEM_PROMPT]
+    #   if state["memory_context"]:
+    #       prompt_parts.append(f"Relevant memory:\n{state['memory_context']}")
+    #   if state["tool_result"]:
+    #       prompt_parts.append(f"Observation: {state['tool_result']}")
+    #   for msg in state["messages"]:
+    #       prompt_parts.append(f"{msg['role'].capitalize()}: {msg['content']}")
+    #   prompt_parts.append(f"User: {state['user_input']}\nAssistant:")
+    #   raw = engine.generate("\n\n".join(prompt_parts))
+
+    # ---- Stub for testing ------------------------------------------------
+    raw = (
+        '{"tool": "web_search", "input": "latest AI news"}'
+        if state.get("tool_result") is None
+        else f"Based on search results: {state['tool_result']}"
+    )
+    # ----------------------------------------------------------------------
+
+    cleaned = strip_markdown(raw)
+    is_tool_call = cleaned.startswith("{") and '"tool"' in cleaned
+
+    return {
+        "llm_output": cleaned,
+        "next_action": "tool_call" if is_tool_call else "respond",
+    }
+
+
+def tool_node(state: AgentState) -> dict:
+    raw = state["llm_output"]
+    logger.info(f"[tool_node] dispatching: {raw[:80]}")
+
+    # --- Parse JSON ---------------------------------------------------------
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        # LLM hallucinated non-JSON. Inject the error as an observation so
+        # the model can self-correct on the next llm_node pass.
+        logger.warning("[tool_node] JSON parse failed � asking LLM to retry")
+        return {
+            "tool_result": (
+                'Error: your last response was not valid JSON. '
+                'Output ONLY a raw JSON object with no backticks, '
+                'e.g. {"tool": "web_search", "input": "your query"}'
+            ),
+            "next_action": "tool_call",
+        }
+
+    tool_name = payload.get("tool", "").strip()
+    tool_input = payload.get("input", "").strip()
+
+    # --- Dispatch -----------------------------------------------------------
+    TOOLS = {
+        "web_search": run_web_search,
+        "os_control": run_os_control,
+    }
+
+    if tool_name not in TOOLS:
+        result = f"Error: unknown tool '{tool_name}'. Available: {list(TOOLS.keys())}"
+    elif not tool_input:
+        result = "Error: 'input' field is empty."
+    else:
+        result = TOOLS[tool_name](tool_input)
+
+    logger.info(f"[tool_node] result preview: {result[:100]}")
+    return {"tool_result": result}
+
+
+def respond_node(state: AgentState) -> dict:
+    logger.info("[respond_node] finalising answer")
+    new_message = {"role": "assistant", "content": state["llm_output"]}
+    # Wipe scratchpad so stale data never leaks into the next turn
+    return {
+        "messages": [new_message],
+        "screen_capture": None,
+        "memory_context": None,
+        "tool_result": None,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Router
+# ---------------------------------------------------------------------------
+
+def router(state: AgentState) -> str:
+    return state["next_action"]
+
+
+# ---------------------------------------------------------------------------
+# Graph
+# ---------------------------------------------------------------------------
+
+def build_graph():
+    graph = StateGraph(AgentState)
+
+    graph.add_node("vision_node", vision_node)
+    graph.add_node("memory_node", memory_node)
+    graph.add_node("llm_node", llm_node)
+    graph.add_node("tool_node", tool_node)
+    graph.add_node("respond_node", respond_node)
+
+    graph.add_edge(START, "vision_node")
+    graph.add_edge("vision_node", "memory_node")
+    graph.add_edge("memory_node", "llm_node")
+
+    graph.add_conditional_edges(
+        "llm_node",
+        router,
+        {"tool_call": "tool_node", "respond": "respond_node"},
+    )
+
+    # After a tool runs, loop back for the LLM to reason over the result
+    graph.add_edge("tool_node", "llm_node")
+    graph.add_edge("respond_node", END)
+
+    return graph.compile()
+
+
+# ---------------------------------------------------------------------------
+# Smoke test
+# ---------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+    app = build_graph()
+
+    initial_state: AgentState = {
+        "messages": [],
+        "user_input": "What is the latest news in AI?",
+        "llm_output": None,
+        "tool_result": None,
+        "screen_capture": None,
+        "memory_context": None,
+        "next_action": "",
+    }
+
+    print("=== Running Jarvis orchestrator ===")
+    result = app.invoke(initial_state)
+    print("\n=== Final state ===")
+    print("messages   :", result["messages"])
+    print("next_action:", result["next_action"])
