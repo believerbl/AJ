@@ -53,7 +53,7 @@ def vision_node(state: AgentState) -> dict:
     logger.info("[vision_node] capturing screen")
     try:
         pipeline = VisionPipeline()
-        b64 = pipeline.get_screen_base64()
+        b64 = pipeline.get_vision_context()
         return {"screen_capture": b64}
     except Exception as e:
         logger.warning(f"[vision_node] screenshot failed: {e}")
