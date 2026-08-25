@@ -10,8 +10,12 @@ from langgraph.graph import StateGraph, START, END
 from tools.web_search import run_web_search
 from tools.os_control import run_os_control
 from sensory.vision import VisionPipeline
+from core.llm_engine import LLMEngine
 
 logger = logging.getLogger(__name__)
+
+# Single engine instance - loaded once at startup, reused across all invocations
+_engine = LLMEngine()
 
 
 # ---------------------------------------------------------------------------
@@ -19,14 +23,13 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 class AgentState(TypedDict):
-    # Full conversation history. operator.add appends instead of overwriting.
-    messages: Annotated[List[dict], operator.add]
+    messages: Annotated[List[dict], operator.add]   # operator.add appends, not overwrites
     user_input: str
     llm_output: Optional[str]
     tool_result: Optional[str]
     screen_capture: Optional[str]
     memory_context: Optional[str]
-    next_action: str            # "tool_call" | "respond" | "needs_approval"
+    next_action: str                 # "tool_call" | "respond" | "needs_approval"
     pending_approval: Optional[str]  # os_control command waiting for Y/N
 
 
@@ -37,7 +40,6 @@ class AgentState(TypedDict):
 def strip_markdown(text: str) -> str:
     """
     Strip code fences LLMs love wrapping their output in.
-    Handles ```json, ```python, and plain ``` blocks.
     Applied centrally in llm_node so every downstream function
     receives clean text - no duplication across tool files.
     """
@@ -51,7 +53,6 @@ def strip_markdown(text: str) -> str:
 # Tiered approval helpers
 # ---------------------------------------------------------------------------
 
-# Read-only, non-destructive shell commands that are safe to auto-approve.
 SAFE_COMMANDS = {
     "dir", "echo", "type", "ls", "pwd", "whoami",
     "hostname", "date", "time", "ver", "systeminfo",
@@ -61,7 +62,6 @@ SAFE_COMMANDS = {
 
 
 def _is_safe_command(command: str) -> bool:
-    """Returns True if command starts with a known safe read-only prefix."""
     cmd_lower = command.strip().lower()
     return any(
         cmd_lower == safe or cmd_lower.startswith(safe + " ")
@@ -86,28 +86,29 @@ def vision_node(state: AgentState) -> dict:
 
 def memory_node(state: AgentState) -> dict:
     logger.info("[memory_node] retrieving context")
-    # TODO: replace with real ChromaDB retrieval from memory/rag_memory.py
+    # TODO: wire in ChromaDB retrieval from memory/rag_memory.py
     return {"memory_context": None}
 
 
 def llm_node(state: AgentState) -> dict:
     logger.info("[llm_node] querying LLM")
-    # TODO: replace stub with real LLMEngine.generate() call.
-    # Prompt assembly sketch:
-    #   parts = [SYSTEM_PROMPT]
-    #   if state["memory_context"]: parts.append(f"Memory:\n{state['memory_context']}")
-    #   if state["tool_result"]: parts.append(f"Observation: {state['tool_result']}")
-    #   for msg in state["messages"]: parts.append(f"{msg['role']}: {msg['content']}")
-    #   parts.append(f"User: {state['user_input']}\nAssistant:")
-    #   raw = engine.generate("\n\n".join(parts))
 
-    # ---- Stub for smoke-testing ------------------------------------------
-    raw = (
-        '{"tool": "web_search", "input": "latest AI news"}'
-        if state.get("tool_result") is None
-        else f"Based on search results: {state['tool_result']}"
+    # Lazy load - model is loaded on the first call, then reused
+    if _engine.model is None:
+        loaded = _engine.load_model()
+        if not loaded:
+            return {
+                "llm_output": "Error: LLM model could not be loaded. Check model path and llama-cpp-python install.",
+                "next_action": "respond",
+            }
+
+    prompt = _engine.build_prompt(
+        user_input=state["user_input"],
+        messages=state["messages"],
+        memory_context=state.get("memory_context"),
+        tool_result=state.get("tool_result"),
     )
-    # ----------------------------------------------------------------------
+    raw = _engine.generate(prompt)
 
     cleaned = strip_markdown(raw)
     is_tool_call = cleaned.startswith("{") and '"tool"' in cleaned
@@ -122,12 +123,10 @@ def tool_node(state: AgentState) -> dict:
     raw = state["llm_output"]
     logger.info(f"[tool_node] dispatching: {raw[:80]}")
 
-    # --- Parse JSON --------------------------------------------------------
     try:
         payload = json.loads(raw)
     except json.JSONDecodeError:
-        # LLM hallucinated non-JSON. Inject error as observation so the
-        # model can self-correct on the next llm_node pass.
+        # Model hallucinated non-JSON - inject error as observation so it self-corrects
         logger.warning("[tool_node] JSON parse failed - asking LLM to retry")
         return {
             "tool_result": (
@@ -151,13 +150,13 @@ def tool_node(state: AgentState) -> dict:
     if not tool_input:
         return {"tool_result": "Error: 'input' field is empty.", "pending_approval": None}
 
-    # web_search: no approval ever needed
+    # web_search - no approval ever needed
     if tool_name == "web_search":
         result = run_web_search(tool_input)
-        logger.info(f"[tool_node] web_search result preview: {result[:100]}")
+        logger.info(f"[tool_node] web_search result: {result[:100]}")
         return {"tool_result": result, "pending_approval": None}
 
-    # os_control: tiered - safe commands auto-approve, risky ones halt for Y/N
+    # os_control - tiered: safe commands auto-approve, risky ones halt for Y/N
     if tool_name == "os_control":
         if _is_safe_command(tool_input):
             logger.info(f"[tool_node] auto-approving safe command: {tool_input}")
@@ -172,14 +171,13 @@ def tool_node(state: AgentState) -> dict:
 def approval_node(state: AgentState) -> dict:
     """
     Prints the pending os_control command and blocks on terminal input.
-    Y  -> executes and injects result back into tool_result.
-    N  -> injects a denial message so the LLM knows and can respond.
-    Either way the graph loops back through llm_node to continue reasoning.
+    Y -> executes and injects stdout into tool_result.
+    N -> injects a denial message so the LLM can respond accordingly.
+    Either way the graph loops back through llm_node.
     """
     command = state["pending_approval"]
-
     print("\n" + "=" * 60)
-    print("[JARVIS] Wants to run the following OS command:")
+    print("[AJ] Wants to run the following OS command:")
     print(f"  >>> {command}")
     print("=" * 60)
 
@@ -188,11 +186,7 @@ def approval_node(state: AgentState) -> dict:
         if choice in ("", "y", "yes"):
             logger.info("[approval_node] approved - executing")
             result = run_os_control(command)
-            return {
-                "tool_result": result,
-                "pending_approval": None,
-                "next_action": "tool_call",
-            }
+            return {"tool_result": result, "pending_approval": None, "next_action": "tool_call"}
         elif choice in ("n", "no"):
             logger.info("[approval_node] denied by user")
             return {
@@ -207,7 +201,6 @@ def approval_node(state: AgentState) -> dict:
 def respond_node(state: AgentState) -> dict:
     logger.info("[respond_node] finalising answer")
     new_message = {"role": "assistant", "content": state["llm_output"]}
-    # Wipe scratchpad so stale data never leaks into the next turn
     return {
         "messages": [new_message],
         "screen_capture": None,
@@ -227,7 +220,7 @@ def router(state: AgentState) -> str:
 
 
 def approval_router(state: AgentState) -> str:
-    """Routes from tool_node: straight to llm_node or to approval gate."""
+    """Routes from tool_node: to llm_node (most cases) or approval gate."""
     return state.get("next_action", "tool_call")
 
 
@@ -249,28 +242,18 @@ def build_graph():
     graph.add_edge("vision_node", "memory_node")
     graph.add_edge("memory_node", "llm_node")
 
-    # llm_node: run tool | halt for approval | final answer
     graph.add_conditional_edges(
         "llm_node",
         router,
-        {
-            "tool_call": "tool_node",
-            "needs_approval": "approval_node",
-            "respond": "respond_node",
-        },
+        {"tool_call": "tool_node", "needs_approval": "approval_node", "respond": "respond_node"},
     )
 
-    # tool_node: safe/web commands go back to llm; risky ones go to approval
     graph.add_conditional_edges(
         "tool_node",
         approval_router,
-        {
-            "tool_call": "llm_node",
-            "needs_approval": "approval_node",
-        },
+        {"tool_call": "llm_node", "needs_approval": "approval_node"},
     )
 
-    # After approval (Y or N), always loop back so LLM sees the outcome
     graph.add_edge("approval_node", "llm_node")
     graph.add_edge("respond_node", END)
 
@@ -278,35 +261,36 @@ def build_graph():
 
 
 # ---------------------------------------------------------------------------
-# Smoke test
+# Entry point
 # ---------------------------------------------------------------------------
 
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
+def run_interactive():
+    """Simple CLI loop - type your prompt, AJ responds."""
+    logging.basicConfig(level=logging.WARNING)  # suppress INFO noise in interactive mode
     app = build_graph()
 
-    # Default: web_search path - no approval needed, runs end-to-end silently.
-    # Pass "os" as CLI arg to test the Y/N approval prompt:
-    #   python -m core.orchestrator os
-    test_os = len(sys.argv) > 1 and sys.argv[1] == "os"
+    print("=== Augmented Jackdaw (AJ) - Local AI Agent ===")
+    print("Type 'exit' to quit.\n")
 
-    if test_os:
-        print("=== Smoke test: os_control approval path ===")
-        state = {
-            "messages": [],
-            "user_input": "List all files here",
-            "llm_output": '{"tool": "os_control", "input": "Get-ChildItem"}',
-            "tool_result": None,
-            "screen_capture": None,
-            "memory_context": None,
-            "next_action": "tool_call",
-            "pending_approval": None,
-        }
-    else:
-        print("=== Smoke test: web_search path (no approval) ===")
-        state = {
-            "messages": [],
-            "user_input": "What is the latest news in AI?",
+    messages: List[dict] = []
+
+    while True:
+        try:
+            user_input = input("You: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nGoodbye.")
+            break
+
+        if user_input.lower() in ("exit", "quit", "q"):
+            print("Goodbye.")
+            break
+
+        if not user_input:
+            continue
+
+        state: AgentState = {
+            "messages": messages,
+            "user_input": user_input,
             "llm_output": None,
             "tool_result": None,
             "screen_capture": None,
@@ -315,8 +299,27 @@ if __name__ == "__main__":
             "pending_approval": None,
         }
 
-    result = app.invoke(state)
-    print("\n=== Final state ===")
-    content = result["messages"][0]["content"][:200] if result["messages"] else "none"
-    print("messages   :", content)
-    print("next_action:", result["next_action"])
+        result = app.invoke(state)
+
+        # Update history with user turn + assistant reply
+        messages.append({"role": "user", "content": user_input})
+        if result["messages"]:
+            reply = result["messages"][-1]["content"]
+            messages.append({"role": "assistant", "content": reply})
+            print(f"\nAJ: {reply}\n")
+
+
+if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "smoke":
+        # Quick smoke test (no model needed - will fail gracefully)
+        logging.basicConfig(level=logging.INFO)
+        app = build_graph()
+        result = app.invoke({
+            "messages": [], "user_input": "Hello",
+            "llm_output": None, "tool_result": None,
+            "screen_capture": None, "memory_context": None,
+            "next_action": "", "pending_approval": None,
+        })
+        print("Result:", result["messages"])
+    else:
+        run_interactive()
