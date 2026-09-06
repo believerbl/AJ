@@ -42,20 +42,42 @@ class AgentState(TypedDict):
 
 def extract_json(text: str) -> str:
     """
-    Extracts the first JSON object found in the LLM output, ignoring any
-    conversational filler, markdown fences, or hallucinated prefixes like
-    `_code` that abliterated models love to add before the JSON.
-    Falls back to the stripped text if no JSON block is found.
+    Extracts the FIRST valid balanced JSON object from LLM output.
+    Walks character-by-character from the first { to find the matching },
+    ignoring any greedy-match issues or trailing garbage text.
+    Strips markdown fences and hallucinated prefixes like `_code` first.
     """
     text = text.strip()
-    # Strip markdown fences first
+    # Strip markdown fences
     text = re.sub(r"^```[a-zA-Z]*\n?", "", text)
     text = re.sub(r"\n?```$", "", text)
     text = text.strip()
-    # Hunt for the first { ... } block even if surrounded by garbage
-    match = re.search(r"\{.*\}", text, re.DOTALL)
-    if match:
-        return match.group(0).strip()
+
+    # Find the first opening brace
+    start = text.find("{")
+    if start == -1:
+        return text   # no JSON at all - plain text response
+
+    # Walk forward counting braces to find the matching close
+    depth = 0
+    for i, ch in enumerate(text[start:], start):
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                candidate = text[start:i+1]
+                try:
+                    import json as _json
+                    _json.loads(candidate)   # validate it is actually parseable
+                    return candidate
+                except Exception:
+                    # Not valid JSON - keep scanning for next {
+                    start = text.find("{", i + 1)
+                    if start == -1:
+                        return text
+                    depth = 0
+                    continue
     return text
 
 
@@ -119,8 +141,10 @@ def llm_node(state: AgentState) -> dict:
         tool_result=state.get("tool_result"),
     )
     raw = _engine.generate(prompt)
+    print(f"[DEBUG] raw model output: {repr(raw[:200])}")
 
     cleaned = extract_json(raw)
+    print(f"[DEBUG] after extract_json: {repr(cleaned[:200])}")
     is_tool_call = cleaned.startswith("{") and '"tool"' in cleaned
 
     return {
