@@ -57,17 +57,43 @@ class LLMEngine:
             logger.error(f"Model not found at: {config.MODEL_PATH}")
             return False
 
+        # Check for trained LoRA adapter (GGUF format required by llama.cpp)
+        adapter_dir = config.MODELS_DIR / "lora_adapter"
+        lora_path = None
+
+        if adapter_dir.exists():
+            for candidate in ["adapter_model.gguf", "lora_adapter.gguf", "adapter.gguf"]:
+                candidate_path = adapter_dir / candidate
+                if candidate_path.exists():
+                    lora_path = str(candidate_path)
+                    break
+
+            if not lora_path:
+                peft_names = [f.name for f in adapter_dir.glob("adapter_model.*")]
+                if peft_names:
+                    logger.warning(
+                        f"Found PEFT adapter in {adapter_dir} ({peft_names}), "
+                        "but llama-cpp requires a .gguf adapter. Convert to GGUF to activate."
+                    )
+
         logger.info(f"Loading model from {config.MODEL_PATH} ...")
+        if lora_path:
+            logger.info(f"Applying LoRA adapter from {lora_path} ...")
+
         try:
             self.model = Llama(
                 model_path=str(config.MODEL_PATH),
+                lora_path=lora_path,
                 n_ctx=config.CONTEXT_WINDOW,
                 n_gpu_layers=-1,
                 n_batch=512,
                 f16_kv=True,
                 verbose=False,
             )
-            logger.info("Model loaded into VRAM.")
+            if lora_path:
+                logger.info(f"Model loaded into VRAM with LoRA adapter from {lora_path}.")
+            else:
+                logger.info("Model loaded into VRAM.")
             return True
         except Exception as e:
             logger.error(f"Failed to load model: {e}")
