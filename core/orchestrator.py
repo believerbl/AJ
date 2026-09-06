@@ -1,4 +1,4 @@
-﻿import re
+import re
 import sys
 import json
 import operator
@@ -10,12 +10,14 @@ from langgraph.graph import StateGraph, START, END
 from tools.web_search import run_web_search
 from tools.os_control import run_os_control
 from sensory.vision import VisionPipeline
+from memory.rag_memory import RAGMemory
 from core.llm_engine import LLMEngine
 
 logger = logging.getLogger(__name__)
 
 # Single engine instance - loaded once at startup, reused across all invocations
 _engine = LLMEngine()
+_memory = RAGMemory()
 
 
 # ---------------------------------------------------------------------------
@@ -86,8 +88,8 @@ def vision_node(state: AgentState) -> dict:
 
 def memory_node(state: AgentState) -> dict:
     logger.info("[memory_node] retrieving context")
-    # TODO: wire in ChromaDB retrieval from memory/rag_memory.py
-    return {"memory_context": None}
+    context = _memory.query_memory(state["user_input"])
+    return {"memory_context": context}
 
 
 def llm_node(state: AgentState) -> dict:
@@ -119,6 +121,10 @@ def llm_node(state: AgentState) -> dict:
     }
 
 
+
+def run_save_memory(text: str) -> str:
+    """Tool wrapper so the orchestrator can call _memory.add_memory uniformly."""
+    return _memory.add_memory(text)
 def tool_node(state: AgentState) -> dict:
     raw = state["llm_output"]
     logger.info(f"[tool_node] dispatching: {raw[:80]}")
@@ -141,7 +147,7 @@ def tool_node(state: AgentState) -> dict:
     tool_name = payload.get("tool", "").strip()
     tool_input = payload.get("input", "").strip()
 
-    if tool_name not in ("web_search", "os_control"):
+    if tool_name not in ("web_search", "os_control", "save_memory"):
         return {
             "tool_result": f"Error: unknown tool '{tool_name}'. Available: web_search, os_control",
             "pending_approval": None,

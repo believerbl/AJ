@@ -1,88 +1,126 @@
+﻿import hashlib
 import logging
+from typing import Optional
+
 import chromadb
-from chromadb.config import Settings
 from chromadb.utils import embedding_functions
-from typing import List, Dict
 
 import config
 
 logger = logging.getLogger(__name__)
 
+
 class RAGMemory:
     """
-    Long-Term Memory using ChromaDB and a local lightweight embedding model.
+    Persistent long-term memory for Augmented Jackdaw.
+
+    Uses ChromaDB as the vector store and all-MiniLM-L6-v2 (CPU-friendly,
+    ~80 MB) as the embedding model. Memories persist across restarts because
+    PersistentClient writes to disk at config.CHROMA_DB_DIR.
+
+    Design: "Conscious Memory" — AJ explicitly chooses what to store by
+    calling the save_memory tool. Nothing is logged passively, so the
+    database stays clean and signal-rich rather than full of noise.
     """
+
+    COLLECTION_NAME = "aj_memory"
+
     def __init__(self):
+        self.collection = None
+        self._init_db()
+
+    def _init_db(self):
         try:
-            # Initialize ChromaDB client to persist data locally
-            self.client = chromadb.PersistentClient(path=config.CHROMA_DB_DIR)
-            
-            # Use all-MiniLM-L6-v2 which runs well on CPU
-            self.embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
+            client = chromadb.PersistentClient(path=config.CHROMA_DB_DIR)
+
+            # all-MiniLM-L6-v2 runs entirely on CPU, uses ~80 MB RAM,
+            # and produces 384-dim embeddings - perfect for a local agent.
+            embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
                 model_name=config.EMBEDDING_MODEL_NAME
             )
-            
-            # Get or create collection
-            self.collection = self.client.get_or_create_collection(
-                name="jarvis_memory",
-                embedding_function=self.embedding_fn
+
+            self.collection = client.get_or_create_collection(
+                name=self.COLLECTION_NAME,
+                embedding_function=embedding_fn,
+                # cosine distance is better than L2 for semantic similarity
+                metadata={"hnsw:space": "cosine"},
             )
-            logger.info(f"RAG Memory initialized at {config.CHROMA_DB_DIR}")
+            logger.info(
+                f"RAGMemory ready — {self.collection.count()} memories "
+                f"loaded from {config.CHROMA_DB_DIR}"
+            )
         except Exception as e:
-            logger.error(f"Failed to initialize ChromaDB: {e}")
-            self.client = None
+            logger.error(f"RAGMemory failed to initialise: {e}")
             self.collection = None
 
-    def store_interaction(self, user_input: str, ai_response: str):
+    # ------------------------------------------------------------------
+    # Public API (called by orchestrator tool wrappers)
+    # ------------------------------------------------------------------
+
+    def add_memory(self, text: str) -> str:
         """
-        Stores an interaction in the vector database.
+        Store a fact or observation that AJ has explicitly decided to remember.
+
+        IDs are content-addressed (MD5 of text) so saving the same fact
+        twice is a silent no-op rather than a duplicate entry.
+
+        Returns a short status string that gets injected back into the
+        LLM's context as a tool observation.
         """
-        if not self.collection:
-            return
+        if self.collection is None:
+            return "Error: memory store is not available."
+
+        if not text.strip():
+            return "Error: cannot save an empty memory."
+
+        doc_id = hashlib.md5(text.encode("utf-8")).hexdigest()
 
         try:
-            # Create a combined document for embedding
-            document = f"User: {user_input}\nJarvis: {ai_response}"
-            
-            # Generate a unique ID (hash of document or simple timestamp)
-            import hashlib
-            doc_id = hashlib.md5(document.encode('utf-8')).hexdigest()
-            
-            self.collection.add(
-                documents=[document],
-                metadatas=[{"type": "conversation", "user_input": user_input}],
-                ids=[doc_id]
+            # upsert so duplicate content never raises an exception
+            self.collection.upsert(
+                documents=[text],
+                metadatas=[{"source": "aj_explicit"}],
+                ids=[doc_id],
             )
-            logger.debug(f"Stored interaction in RAG memory: {doc_id}")
+            logger.info(f"[RAGMemory] saved: {text[:80]}")
+            return f"Memory saved: \"{text[:80]}\""
         except Exception as e:
-            logger.error(f"Failed to store interaction: {e}")
+            logger.error(f"[RAGMemory] add_memory failed: {e}")
+            return f"Error saving memory: {e}"
 
-    def retrieve_context(self, query: str, n_results: int = 3) -> str:
+    def query_memory(self, query: str, k: int = 3) -> Optional[str]:
         """
-        Retrieve relevant past interactions to inject into the system prompt.
+        Retrieve the k most semantically relevant memories for a query.
+
+        Returns a formatted string ready to inject into the system prompt,
+        or None if the database is empty or unavailable.
         """
-        if not self.collection:
-            return ""
+        if self.collection is None:
+            return None
+
+        count = self.collection.count()
+        if count == 0:
+            return None
 
         try:
-            # If the collection is empty, it might throw an exception on query
-            if self.collection.count() == 0:
-                return ""
-                
             results = self.collection.query(
                 query_texts=[query],
-                n_results=min(n_results, self.collection.count())
+                n_results=min(k, count),
             )
-            
-            if not results['documents'] or not results['documents'][0]:
-                return ""
-                
-            # Format retrieved context
-            context_str = "Relevant Past Interactions:\n"
-            for doc in results['documents'][0]:
-                context_str += f"{doc}\n---\n"
-                
-            return context_str.strip()
+
+            docs = results.get("documents", [[]])[0]
+            if not docs:
+                return None
+
+            lines = ["[AJ's memory - relevant facts from past sessions]"]
+            for i, doc in enumerate(docs, 1):
+                lines.append(f"{i}. {doc}")
+
+            return "\n".join(lines)
         except Exception as e:
-            logger.error(f"Failed to retrieve context: {e}")
-            return ""
+            logger.error(f"[RAGMemory] query_memory failed: {e}")
+            return None
+
+    def memory_count(self) -> int:
+        """Returns the number of memories currently stored."""
+        return self.collection.count() if self.collection else 0
