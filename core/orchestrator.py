@@ -149,6 +149,15 @@ def llm_node(state: AgentState) -> dict:
     print(f"[DEBUG] after extract_json: {repr(cleaned[:200])}")
     is_tool_call = cleaned.startswith("{") and '"tool"' in cleaned
 
+    if is_tool_call:
+        try:
+            parsed = json.loads(cleaned)
+            t_name = parsed.get("tool")
+            t_input = parsed.get("input")
+            print(f"[TOOL HIT] LLM produced valid tool call: {t_name}(input={repr(t_input)})")
+        except Exception:
+            pass
+
     return {
         "llm_output": cleaned,
         "next_action": "tool_call" if is_tool_call else "respond",
@@ -194,20 +203,44 @@ def tool_node(state: AgentState) -> dict:
 
     # web_search - no approval ever needed
     if tool_name == "web_search":
+        print(f"[TOOL HIT] >>> Executing web_search: {tool_input!r} ...")
         result = run_web_search(tool_input)
+        print(f"[TOOL HIT] [DONE] web_search returned ({len(result)} chars): {result[:120]!r}...")
         logger.info(f"[tool_node] web_search result: {result[:100]}")
-        return {"tool_result": result, "pending_approval": None, "tool_call_count": state.get("tool_call_count", 0) + 1}
+        return {
+            "tool_result": result,
+            "pending_approval": None,
+            "tool_call_count": state.get("tool_call_count", 0) + 1,
+        }
 
     # os_control - tiered: safe commands auto-approve, risky ones halt for Y/N
     if tool_name == "os_control":
         if _is_safe_command(tool_input):
-            logger.info(f"[tool_node] auto-approving safe command: {tool_input}")
+            print(f"[TOOL HIT] >>> Auto-approved safe OS command: {tool_input!r}")
             result = run_os_control(tool_input)
+            print(f"[TOOL HIT] [DONE] os_control returned ({len(result)} chars): {result[:120]!r}...")
             logger.info(f"[tool_node] os_control result: {result[:100]}")
-            return {"tool_result": result, "pending_approval": None, "tool_call_count": state.get("tool_call_count", 0) + 1}
+            return {
+                "tool_result": result,
+                "pending_approval": None,
+                "tool_call_count": state.get("tool_call_count", 0) + 1,
+            }
         else:
+            print(f"[TOOL HIT] [HOLD] OS command requires human approval: {tool_input!r}")
             logger.info(f"[tool_node] queuing for human approval: {tool_input}")
             return {"pending_approval": tool_input, "next_action": "needs_approval"}
+
+    # save_memory - long-term vector memory storage
+    if tool_name == "save_memory":
+        print(f"[TOOL HIT] >>> Saving fact to long-term memory: {tool_input!r} ...")
+        result = run_save_memory(tool_input)
+        print(f"[TOOL HIT] [DONE] Fact saved to ChromaDB: {result!r}")
+        logger.info(f"[tool_node] save_memory result: {result}")
+        return {
+            "tool_result": result,
+            "pending_approval": None,
+            "tool_call_count": state.get("tool_call_count", 0) + 1,
+        }
 
 
 def approval_node(state: AgentState) -> dict:
@@ -227,7 +260,9 @@ def approval_node(state: AgentState) -> dict:
         choice = input("Approve? [Y/n]: ").strip().lower()
         if choice in ("", "y", "yes"):
             logger.info("[approval_node] approved - executing")
+            print(f"[TOOL HIT] >>> User approved OS command: {command!r}")
             result = run_os_control(command)
+            print(f"[TOOL HIT] [DONE] os_control returned ({len(result)} chars): {result[:120]!r}...")
             return {"tool_result": result, "pending_approval": None, "next_action": "tool_call"}
         elif choice in ("n", "no"):
             logger.info("[approval_node] denied by user")
