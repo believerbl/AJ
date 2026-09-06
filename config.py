@@ -19,7 +19,7 @@ USABLE_VRAM_GB = VRAM_LIMIT_GB - VRAM_BUFFER_GB
 # LLM Engine Settings
 MODEL_NAME = "gemma-2-2b-it-abliterated-Q4_K_M" # Placeholder for the local quantized model path or name
 MODEL_PATH = MODELS_DIR / f"{MODEL_NAME}.gguf" 
-CONTEXT_WINDOW = 4096
+CONTEXT_WINDOW = 8192
 
 # RAG Memory Settings
 EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2" # Runs on CPU
