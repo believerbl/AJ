@@ -1,4 +1,4 @@
-import re
+﻿import re
 import sys
 import json
 import operator
@@ -34,6 +34,7 @@ class AgentState(TypedDict):
     memory_context: Optional[str]
     next_action: str                 # "tool_call" | "respond" | "needs_approval"
     pending_approval: Optional[str]  # os_control command waiting for Y/N
+    tool_call_count: int             # how many tool calls have been made this turn
 
 
 # ---------------------------------------------------------------------------
@@ -139,6 +140,7 @@ def llm_node(state: AgentState) -> dict:
         messages=state["messages"],
         memory_context=state.get("memory_context"),
         tool_result=state.get("tool_result"),
+        tool_call_count=state.get("tool_call_count", 0),
     )
     raw = _engine.generate(prompt)
     print(f"[DEBUG] raw model output: {repr(raw[:200])}")
@@ -174,6 +176,7 @@ def tool_node(state: AgentState) -> dict:
             ),
             "next_action": "tool_call",
             "pending_approval": None,
+            "tool_call_count": 0,
         }
 
     tool_name = payload.get("tool", "").strip()
@@ -183,6 +186,7 @@ def tool_node(state: AgentState) -> dict:
         return {
             "tool_result": f"Error: unknown tool '{tool_name}'. Available: web_search, os_control",
             "pending_approval": None,
+            "tool_call_count": 0,
         }
 
     if not tool_input:
@@ -192,7 +196,7 @@ def tool_node(state: AgentState) -> dict:
     if tool_name == "web_search":
         result = run_web_search(tool_input)
         logger.info(f"[tool_node] web_search result: {result[:100]}")
-        return {"tool_result": result, "pending_approval": None}
+        return {"tool_result": result, "pending_approval": None, "tool_call_count": state.get("tool_call_count", 0) + 1}
 
     # os_control - tiered: safe commands auto-approve, risky ones halt for Y/N
     if tool_name == "os_control":
@@ -200,7 +204,7 @@ def tool_node(state: AgentState) -> dict:
             logger.info(f"[tool_node] auto-approving safe command: {tool_input}")
             result = run_os_control(tool_input)
             logger.info(f"[tool_node] os_control result: {result[:100]}")
-            return {"tool_result": result, "pending_approval": None}
+            return {"tool_result": result, "pending_approval": None, "tool_call_count": state.get("tool_call_count", 0) + 1}
         else:
             logger.info(f"[tool_node] queuing for human approval: {tool_input}")
             return {"pending_approval": tool_input, "next_action": "needs_approval"}
@@ -252,6 +256,7 @@ def respond_node(state: AgentState) -> dict:
         "memory_context": None,
         "tool_result": None,
         "pending_approval": None,
+        "tool_call_count": 0,
     }
 
 
@@ -342,9 +347,10 @@ def run_interactive():
             "memory_context": None,
             "next_action": "",
             "pending_approval": None,
+            "tool_call_count": 0,
         }
 
-        result = app.invoke(state, config={"recursion_limit": 10})
+        result = app.invoke(state, config={"recursion_limit": 12})
 
         # Update history with user turn + assistant reply
         messages.append({"role": "user", "content": user_input})
@@ -363,8 +369,9 @@ if __name__ == "__main__":
             "messages": [], "user_input": "Hello",
             "llm_output": None, "tool_result": None,
             "screen_capture": None, "memory_context": None,
-            "next_action": "", "pending_approval": None,
+            "next_action": "", "pending_approval": None, "tool_call_count": 0,
         })
         print("Result:", result["messages"])
     else:
         run_interactive()
+

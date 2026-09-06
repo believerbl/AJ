@@ -11,28 +11,19 @@ import config
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# System prompt
+# System prompt - kept minimal so the model's own training drives tool choice
 # ---------------------------------------------------------------------------
 
-SYSTEM_PROMPT = """You are Augmented Jackdaw (AJ), a local autonomous AI assistant running entirely on-device.
+SYSTEM_PROMPT = """\
+You are Augmented Jackdaw (AJ), a local AI assistant built by Parimarjan. You run fully on-device.
 
-TOOL USAGE RULES - follow these exactly:
-When you need current information, need to run a command, or need to save a fact,
-you MUST respond with ONLY a raw JSON object on a single line. No text before it.
-No text after it. No backticks. No explanation. Just the JSON:
-  {"tool": "web_search", "input": "your search query"}
-  {"tool": "os_control", "input": "your shell command or python script"}
-  {"tool": "save_memory", "input": "a concise fact worth remembering"}
+To use a tool, output ONLY a JSON object on a single line - nothing else before or after it:
+{"tool": "web_search", "input": "your search query"}
+{"tool": "os_control", "input": "shell command or python script"}
+{"tool": "save_memory", "input": "a fact worth remembering long-term"}
 
-Use save_memory when the user shares something personal, a preference, a name,
-or any fact useful in future sessions. Be selective - only durable, useful facts.
-
-When you have enough information to answer directly, respond in plain text only.
-Do NOT mix JSON with conversational text.
-Do NOT use tools for greetings, identity questions ("who are you"), or anything you can answer from your own knowledge.
-Only use tools when you genuinely need external information or to perform a system action.
-
-Available tools: web_search, os_control, save_memory"""
+Otherwise respond in plain text.\
+"""
 
 
 # ---------------------------------------------------------------------------
@@ -43,54 +34,40 @@ class LLMEngine:
     """
     Local inference wrapper for quantized GGUF models via llama-cpp-python.
 
-    Key init parameters explained:
-      n_gpu_layers=-1  -> offload every transformer layer to the RTX 2050 VRAM.
-                          For a 4-bit quantized 2B model (~1.5 GB) this fits
-                          entirely in the 4 GB VRAM budget.
-      n_ctx=4096       -> context window sized to comfortably hold system
-                          prompt + tool results + conversation history
-                          without hitting OOM.
-      n_batch=512      -> tokens per batch - sweet spot for throughput on
-                          a consumer GPU without stalling.
-      f16_kv=True      -> float16 KV cache saves ~20% VRAM vs float32.
+    Init parameters:
+      n_gpu_layers=-1  -> offload every layer to RTX 2050 VRAM
+      n_ctx=8192       -> full context window (matches model training size)
+      n_batch=512      -> tokens per batch
+      f16_kv=True      -> float16 KV cache (~20% VRAM saving vs float32)
     """
 
     def __init__(self):
         self.model: Optional[Llama] = None
 
     def load_model(self) -> bool:
-        """
-        Load the GGUF model from disk into VRAM.
-        Returns True on success, False on failure (so the caller can decide
-        whether to abort or fall back gracefully).
-        """
         if Llama is None:
             logger.error(
                 "llama-cpp-python is not installed.\n"
-                "Install the pre-built CUDA wheel with:\n"
-                "  pip install llama-cpp-python "
+                "pip install llama-cpp-python "
                 "--extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu121"
             )
             return False
 
         if not config.MODEL_PATH.exists():
-            logger.error(
-                f"Model file not found at: {config.MODEL_PATH}\n"
-                "Download a 4-bit quantized GGUF of Gemma 2B-IT and place it there."
-            )
+            logger.error(f"Model not found at: {config.MODEL_PATH}")
             return False
 
         logger.info(f"Loading model from {config.MODEL_PATH} ...")
         try:
             self.model = Llama(
                 model_path=str(config.MODEL_PATH),
-                n_ctx=config.CONTEXT_WINDOW,   # 4096 tokens
-                n_gpu_layers=-1,                # all layers to RTX 2050
-                n_batch=512,                    # batch size for throughput
-                f16_kv=True,                    # float16 KV cache
+                n_ctx=config.CONTEXT_WINDOW,
+                n_gpu_layers=-1,
+                n_batch=512,
+                f16_kv=True,
                 verbose=False,
             )
-            logger.info("Model loaded successfully into VRAM.")
+            logger.info("Model loaded into VRAM.")
             return True
         except Exception as e:
             logger.error(f"Failed to load model: {e}")
@@ -102,45 +79,40 @@ class LLMEngine:
         messages: List[dict],
         memory_context: Optional[str] = None,
         tool_result: Optional[str] = None,
+        tool_call_count: int = 0,
+        max_tool_calls: int = 4,
     ) -> str:
         """
-        Assemble a Gemma-format prompt from the conversation state.
+        Assemble a Gemma instruction-tuned prompt.
 
-        Gemma instruction-tuned models expect strictly alternating turns:
-            <start_of_turn>user
-            [content]<end_of_turn>
-            <start_of_turn>model
-            [content]<end_of_turn>
-            ...
-
-        The final <start_of_turn>model is left UNCLOSED - that is the open
-        completion slot the model writes into. Adding <end_of_turn> there
-        would cause the model to generate nothing.
+        The final <start_of_turn>model tag is left UNCLOSED intentionally —
+        that is the open slot the model writes into.
         """
         parts: List[str] = []
 
-        # Replay prior turns from conversation history
+        # Replay prior conversation turns
         for msg in messages:
             role = "user" if msg["role"] == "user" else "model"
-            parts.append(
-                f"<start_of_turn>{role}\n{msg['content']}<end_of_turn>"
-            )
+            parts.append(f"<start_of_turn>{role}\n{msg['content']}<end_of_turn>")
 
-        # Build the current user turn, injecting all available context
+        # Build current user turn with injected context
         user_content = SYSTEM_PROMPT
 
         if memory_context:
-            user_content += f"\n\nRelevant memory from past sessions:\n{memory_context}"
+            user_content += f"\n\n[Memory]\n{memory_context}\n[/Memory]"
 
         if tool_result:
-            user_content += f"\n\nObservation from last tool call:\n{tool_result}"
+            remaining = max_tool_calls - tool_call_count
+            attempts_str = f"{remaining} attempt{'s' if remaining != 1 else ''} remaining"
+            user_content += (
+                f"\n\n[Tool result — call {tool_call_count}/{max_tool_calls}, {attempts_str}]\n"
+                f"{tool_result}\n[/Tool result]"
+            )
 
         user_content += f"\n\n{user_input}"
 
         parts.append(f"<start_of_turn>user\n{user_content}<end_of_turn>")
-
-        # Open model completion slot - no closing tag intentionally
-        parts.append("<start_of_turn>model\n")
+        parts.append("<start_of_turn>model\n")  # open slot — no closing tag
 
         return "\n".join(parts)
 
@@ -151,16 +123,10 @@ class LLMEngine:
         stop: Optional[List[str]] = None,
         temperature: float = 0.7,
     ) -> str:
-        """
-        Run inference and return the raw generated text.
-        Stop sequences prevent the model from hallucinating extra turns.
-        """
         if self.model is None:
-            logger.warning("Model is not loaded. Call load_model() first.")
+            logger.warning("Model not loaded. Call load_model() first.")
             return ""
 
-        # These stop sequences prevent the model from generating fake
-        # "User:" or "Observation:" turns after it finishes responding.
         default_stop = ["<end_of_turn>", "\n\nUser:", "\n\nObservation:"]
 
         try:
