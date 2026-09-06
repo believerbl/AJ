@@ -1,100 +1,171 @@
 ﻿# Augmented Jackdaw (AJ)
 
-> A fully local, autonomous AI agent that runs entirely on your own hardware — no cloud, no API keys, no subscriptions.
+> A fully local, autonomous, self-improving AI agent engineered for consumer hardware. Zero cloud, zero API keys, zero subscriptions — 100% private.
 
-AJ is a personal AI assistant built on a **LangGraph state machine**, powered by a quantized local LLM via `llama-cpp-python`. It can search the web, execute system commands, remember past conversations, and see your screen — all without a single byte leaving your machine.
-
----
-
-## What it can do
-
-| Capability | Module | Status |
-|---|---|---|
-| Answer questions (local LLM) | `core/llm_engine.py` | ✅ Ready (needs model file) |
-| Real-time web search | `tools/web_search.py` | ✅ Live |
-| Execute shell / Python scripts | `tools/os_control.py` | ✅ Live |
-| Human-in-the-loop approval gate | `core/orchestrator.py` | ✅ Live |
-| Long-term memory (RAG) | `memory/rag_memory.py` | 🔧 Wired, testing pending |
-| Desktop vision | `sensory/vision.py` | 🔧 Wired, headless limitation |
-| Continuous background learning | `learning/idle_trainer.py` | 🔧 Phase 6 |
+Augmented Jackdaw is a personal AI assistant built on a **LangGraph state machine** and powered by local quantized LLMs via `llama-cpp-python`. It searches the web, executes system commands, recalls long-term memories via local vector RAG, observes your screen, and **autonomously fine-tunes itself on its own interactions while your computer is idle** — all engineered to run within a strict **4 GB VRAM budget** (NVIDIA RTX 2050).
 
 ---
 
-## Architecture
+## Architecture Overview
 
-AJ is built as a **LangGraph ReAct loop** — a cyclical state machine where the LLM reasons, calls tools, observes results, and reasons again until it has a final answer.
+AJ operates on a dual-loop cognitive architecture: an **Interactive LangGraph ReAct Loop** for real-time task execution, and a background **Autonomous Delta-Chunk QLoRA Loop** for continuous self-improvement.
 
 ```
-START
-  │
-  ▼
-vision_node        ← captures desktop screenshot
-  │
-  ▼
-memory_node        ← retrieves relevant past context from ChromaDB
-  │
-  ▼
-llm_node           ← sends assembled Gemma prompt to local model
-  │
-  ├──"tool_call"──► tool_node ──────────────────────► llm_node (loop)
-  │                    │
-  │              "needs_approval"
-  │                    │
-  │               approval_node  ← Y/N terminal prompt for risky commands
-  │                    │
-  │                    └──────────────────────────────► llm_node (loop)
-  │
-  └──"respond"──► respond_node ──► END
+                           +----------------------------------------+
+                           |          User Speaks to AJ             |
+                           +-------------------+--------------------+
+                                               |
+                                               v
++========================================================================================+
+|                        INTERACTIVE REACT LOOP (LangGraph Engine)                       |
+|                                                                                        |
+|    +---------------+        +---------------+        +----------------------------+    |
+|    |  vision_node  | -----> |  memory_node  | -----> |          llm_node          |    |
+|    | (Screenshots) |        | (ChromaDB RAG)|        | (Gemma-2B + LoRA in VRAM)  |    |
+|    +---------------+        +---------------+        +--------------+-------------+    |
+|                                                                     |                  |
+|                                               +---------------------+----------------+ |
+|                                               |                                      | |
+|                                       "tool_call"                                "respond"
+|                                               |                                      | |
+|                                               v                                      v |
+|                              +---------------------------------+             +-------+-+
+|                              |   Regex JSON Fence Sanitizer    |             | respond |
+|                              +----------------+----------------+             |  _node  |
+|                                               |                              +----+----+
+|                         +---------------------+---------------------+             |    |
+|                         |                                           |             |    |
+|               Safe / Read-Only Tool                           State-Changing Tool |    |
+|                         |                                           |             |    |
+|                         v                                           v             |    |
+|                  +--------------+                         +-------------------+   |    |
+|                  |  tool_node   |                         |   approval_node   |   |    |
+|                  | (Web/OS/RAG) |                         | (Interactive Y/N) |   |    |
+|                  +-------+------+                         +---------+---------+   |    |
+|                          |                                          |             |    |
+|                          +--------------------+---------------------+             |    |
+|                                               |                                   |    |
+|                                               v                                   |    |
+|                                   [Observations & Attempts]                      |    |
+|                                               |                                   |    |
+|                                               +-----------------------------------+    |
++===============================================|========================================+
+                                                |
+                                                | Logs sanitized, perfected turns
+                                                v
++========================================================================================+
+|                    AUTONOMOUS CONTINUOUS LEARNING LOOP (Phase 7)                       |
+|                                                                                        |
+|         +--------------------------------------------------------------------+         |
+|         |                   data/my_jarvis_data.jsonl                        |         |
+|         |          (Self-healing data pipeline of gold-standard turns)       |         |
+|         +---------------------------------+----------------------------------+         |
+|                                           |                                            |
+|                                           v                                            |
+|         +--------------------------------------------------------------------+         |
+|         |                Chunk Cursor Tracking (50 items/chunk)              |         |
+|         |     Ensures training only runs on new deltas -- never grows stale  |         |
+|         +---------------------------------+----------------------------------+         |
+|                                           |                                            |
+|                  +------------------------+------------------------+                   |
+|                  |                                                 |                   |
+|       Fewer than 50 new turns                              50+ turns & idle 10m        |
+|                  |                                                 |                   |
+|                  v                                                 v                   |
+|         [Idle Watchdog Sleeps]                       +---------------------------+     |
+|                                                      |  core/idle_monitor.py     |     |
+|                                                      | (Windows GetLastInputInfo)|     |
+|                                                      +-------------+-------------+     |
+|                                                                    |                   |
+|                                                                    v                   |
+|                                                      +---------------------------+     |
+|                                                      |    core/train_lora.py     |     |
+|                                                      | (4-bit NF4 + 8-bit AdamW) |     |
+|                                                      +-------------+-------------+     |
+|                                                                    |                   |
+|                      User moves mouse / presses key                | Training complete |
+|                      ----------------------------->                v                   |
+|                      Instant SIGTERM: VRAM freed             models/lora_adapter/      |
+|                      Cursor intact for next idle                   |                   |
+|                                                                    |                   |
+|                                              Snaps weights on boot v                   |
+|                                              +-----------------------------------+     |
+|                                              |     core/llm_engine.py (Boot)     |     |
+|                                              |  `lora_path` auto-applied to VRAM |     |
+|                                              +-----------------------------------+     |
++========================================================================================+
 ```
-
-### Key design decisions
-
-1. **Single-file constraint until 400 lines** — modules stay in one file until they grow past that, keeping the codebase readable without over-engineering.
-2. **Flat JSON tool schema** — `{"tool": "web_search", "input": "..."}` — intentionally minimal so a 2B model can reliably produce it without hallucinating nested structures.
-3. **Central `strip_markdown()`** in `llm_node` — strips code fences from the LLM output once, before anything else sees the text, instead of duplicating the logic in every tool.
-4. **Tiered approval for `os_control`** — read-only commands (`dir`, `echo`, `ls`, etc.) auto-approve; anything else halts and asks for `Y/N` in the terminal.
-5. **Self-healing JSON errors** — if the LLM outputs invalid JSON, the error is injected back as a tool observation so the model corrects itself on the next pass, no crash.
 
 ---
 
-## Project structure
+## Capabilities & Feature Matrix
+
+| Capability | Implementation | Hardware Strategy | Status |
+|---|---|---|---|
+| **Local LLM Engine** | `core/llm_engine.py` | Full GPU offload via `llama-cpp-python`, f16 KV cache, 8192 context window | Live |
+| **Real-Time Web Search** | `tools/web_search.py` | DuckDuckGo search (`ddgs`) with smart retry & exception recovery | Live |
+| **OS Control & Scripting** | `tools/os_control.py` | Safe subprocess execution in PowerShell/CMD/Python | Live |
+| **Human-in-the-Loop Safety**| `core/orchestrator.py` | Two-tier gate: read-only auto-executes; destructive commands require `[Y/n]` | Live |
+| **Long-Term Memory (RAG)** | `memory/rag_memory.py` | ChromaDB vector store running CPU-bound `all-MiniLM-L6-v2` embeddings | Live |
+| **Desktop Vision** | `sensory/vision.py` | Downsampled screenshot capture with PIL compression | Live |
+| **Self-Healing Output** | `core/orchestrator.py` | Regex fence stripping + brace-balanced JSON extractor + remaining attempt budget | Live |
+| **Autonomous Watchdog** | `core/idle_monitor.py` | Native Windows API inactivity tracking; zero CPU/GPU overhead while active | Live |
+| **Delta-Chunk QLoRA** | `core/train_lora.py` | 4-bit BitsAndBytes NF4 quantization + 8-bit Paged AdamW fitted to 4GB VRAM | Live |
+| **Dynamic Adapter Snap** | `core/llm_engine.py` | Auto-detects and mounts trained GGUF LoRA adapter on startup via `lora_path` | Live |
+
+---
+
+## Key Engineering Decisions
+
+1. **Delta-Chunk Training Cursor**: Rather than retraining on an ever-growing dataset (which causes exponential slowdowns), AJ uses a persistent cursor (`data/training_cursor.json`). It trains strictly on the newest delta chunk (50 interactions), advances the cursor, and skips already learned interactions.
+2. **Zero-Latency Resource Preemption**: The background idle watchdog monitors native Windows user input (`GetLastInputInfo`). The exact millisecond you touch your mouse or keyboard, any active training process is sent `SIGTERM`, instantly freeing the GPU before you notice any frame drops.
+3. **Regex Gatekeeper & Budget Pattern**: Smaller 2B models can struggle with strict JSON schemas. AJ strips outer markdown code fences (`^```[a-zA-Z]*` and `\n?```$`), extracts balanced JSON objects, and injects remaining-attempt budgets (`call 1/4, 3 attempts remaining`) instead of negative imperatives.
+4. **Isolated Adapter Architecture**: Inference runs via fast GGUF C++ binaries, while fine-tuning runs in Python via HuggingFace PEFT/BitsAndBytes. The runtime cleanly checks for GGUF adapters and attaches them without modifying the base model weights on disk.
+
+---
+
+## Project Structure
 
 ```
 AJ/
+├── config.py                 # Central configurations (paths, VRAM limits, hyperparameters)
 ├── core/
-│   ├── llm_engine.py       # Llama.cpp wrapper, Gemma prompt builder, GPU config
-│   └── orchestrator.py     # LangGraph graph: nodes, edges, routers, CLI loop
+│   ├── llm_engine.py         # Llama-cpp engine, prompt builder, LoRA auto-loader
+│   ├── orchestrator.py       # LangGraph state machine, tool routing, safety gate
+│   ├── training_logger.py    # Curates and appends perfected turns to JSONL
+│   ├── idle_monitor.py       # Native Windows API idle watchdog & process supervisor
+│   └── train_lora.py         # 4-bit QLoRA trainer with cursor tracking (VRAM-safe)
 ├── tools/
-│   ├── web_search.py       # DuckDuckGo search via ddgs
-│   └── os_control.py       # subprocess shell/Python execution with safety gate
+│   ├── web_search.py         # DuckDuckGo search integration
+│   └── os_control.py         # Shell command execution & validation
 ├── memory/
-│   └── rag_memory.py       # ChromaDB vector store for long-term memory
+│   └── rag_memory.py         # ChromaDB long-term memory store
 ├── sensory/
-│   └── vision.py           # Desktop screenshot capture and compression
-├── learning/
-│   ├── data_collector.py   # Logs interactions to JSONL for training
-│   └── idle_trainer.py     # LoRA fine-tuning during idle periods
-├── config.py               # All paths, VRAM limits, and hyperparameters
-├── main.py                 # Alternative entry point
+│   └── vision.py             # Desktop capture & image compression
+├── data/
+│   ├── my_jarvis_data.jsonl  # Accumulated training dataset (created at runtime)
+│   └── training_cursor.json  # Delta chunk pointer (created at runtime)
+├── models/                   # GGUF models and trained LoRA adapters
+├── memory_db/                # ChromaDB persistent vector database
 └── requirements.txt
 ```
 
 ---
 
-## Hardware requirements
+## Hardware Requirements
 
-| Component | Requirement |
-|---|---|
-| GPU | NVIDIA GPU with CUDA support (tested on RTX 2050, 4 GB VRAM) |
-| RAM | 8 GB minimum, 16 GB recommended |
-| Disk | ~3 GB for model + dependencies |
-| OS | Windows 11 (WSL2 supported) |
+| Component | Minimum Specification | Tested Specification |
+|---|---|---|
+| **GPU** | NVIDIA GPU with 4 GB VRAM (CUDA support) | NVIDIA GeForce RTX 2050 (4 GB) |
+| **RAM** | 8 GB System Memory | 16 GB DDR4 |
+| **Storage** | ~4 GB for model weights & dependencies | SSD |
+| **OS** | Windows 10/11 64-bit | Windows 11 Home |
 
 ---
 
-## Setup
+## Installation & Setup
 
-### 1. Clone and create a virtual environment
+### 1. Clone & Set Up Virtual Environment
 
 ```powershell
 git clone https://github.com/believerbl/AJ.git
@@ -103,94 +174,72 @@ python -m venv venv
 .\venv\Scripts\activate
 ```
 
-### 2. Install dependencies
+### 2. Install Dependencies
 
 ```powershell
 pip install -r requirements.txt
 ```
 
-> **Note:** `llama-cpp-python` requires a C++ compiler to build from source on Windows.
-> Skip the compile entirely by installing the pre-built CUDA wheel instead:
-> ```powershell
-> pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu121
-> ```
-
-### 3. Download the model
-
-Download a 4-bit quantized GGUF of **Gemma 2B-IT** (the `Q4_K_M` variant is recommended):
-
-- 👉 [bartowski/gemma-2-2b-it-GGUF on HuggingFace](https://huggingface.co/bartowski/gemma-2-2b-it-GGUF)
-
-Place the downloaded file here:
-```
-AJ/models/gemma-2b-it-GGUF.gguf
+Install the pre-compiled CUDA wheel for `llama-cpp-python` (matches your CUDA version):
+```powershell
+pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu121
 ```
 
-The model path is configured in `config.py` — edit `MODEL_NAME` if you use a different filename.
+### 3. Model Setup
+
+Place your quantized `.gguf` file inside the `models/` directory:
+```
+models/gemma-2-2b-it-abliterated-Q4_K_M.gguf
+```
+*(Filename can be adjusted via `MODEL_NAME` in `config.py`)*
 
 ---
 
-## Running AJ
+## Running Augmented Jackdaw
 
+For the full autonomous experience, run the interactive agent and the idle watchdog in two terminal windows:
+
+### Terminal 1 — The Interactive Agent
 ```powershell
+cd D:\believer\codes\projects\AJ
 .\venv\Scripts\activate
 python -m core.orchestrator
 ```
 
-You will see an interactive prompt:
-```
-=== Augmented Jackdaw (AJ) - Local AI Agent ===
-Type 'exit' to quit.
-
-You: What is the weather in Delhi today?
-```
-
-AJ will reason, call web search, and reply — all locally.
-
-### Test the OS approval gate
-
+### Terminal 2 — The Autonomous Idle Watchdog
 ```powershell
-python -m core.orchestrator os
+cd D:\believer\codes\projects\AJ
+.\venv\Scripts\activate
+python -m core.idle_monitor
 ```
 
-This triggers a fake `Get-ChildItem` command so you can see the `[Y/n]` approval prompt before any real system access happens.
-
 ---
 
-## Safety
+## Configuration Reference
 
-AJ has a **two-tier safety model** for OS commands:
+All hyperparameters are centralized in [`config.py`](config.py):
 
-- **Auto-approved** (read-only, no side effects): `dir`, `echo`, `ls`, `ping`, `whoami`, `ipconfig`, `pip list`, etc.
-- **Human approval required** (everything else): AJ prints the exact command it wants to run and waits for your explicit `Y` or `N` before touching anything.
-
-Web searches always run without approval since they have no write access to your system.
-
----
-
-## Configuration
-
-All tunable parameters live in [`config.py`](config.py):
-
-| Variable | Default | Description |
+| Parameter | Default | Purpose |
 |---|---|---|
-| `MODEL_NAME` | `gemma-2b-it-GGUF` | GGUF filename (without `.gguf`) |
-| `CONTEXT_WINDOW` | `4096` | LLM context size in tokens |
-| `IDLE_TIMEOUT_SECONDS` | `600` | Idle time before background training kicks in |
-| `EMBEDDING_MODEL_NAME` | `all-MiniLM-L6-v2` | CPU embedding model for RAG memory |
+| `VRAM_LIMIT_GB` | `4.0` | Total hardware VRAM ceiling |
+| `CONTEXT_WINDOW` | `8192` | Model context window in tokens |
+| `TRAINING_CHUNK_SIZE`| `50` | Number of interactions required before fine-tuning |
+| `IDLE_TIMEOUT_SECONDS`| `600` | Inactivity delay (10 min) before triggering training |
+| `LORA_R` | `128` | LoRA rank for adapter capacity |
+| `TRAINING_BATCH_SIZE`| `1` | Batch size optimized for 4GB VRAM safety |
 
 ---
 
-## Roadmap
+## Roadmap & Milestones
 
-- [x] Phase 1 — Project scaffold, LLM engine, vision pipeline
-- [x] Phase 2 — LangGraph orchestrator skeleton with AgentState
-- [x] Phase 3 — Web search + OS control tools with safety gate
-- [x] Phase 4 — Human-in-the-Loop approval node
-- [x] Phase 5 — Real LLM integration (Gemma prompt template + GPU offloading)
-- [ ] Phase 6 — ChromaDB long-term memory (RAG)
-- [ ] Phase 7 — Idle-time LoRA fine-tuning loop
+- [x] **Phase 1: Foundations** - Project scaffold, GGUF inference engine, vision capture.
+- [x] **Phase 2: Graph Architecture** - LangGraph state machine with cyclic ReAct pattern.
+- [x] **Phase 3: Core Tooling** - DuckDuckGo web search & sandboxed OS command executor.
+- [x] **Phase 4: Safety Architecture** - Human-in-the-loop approval gate for non-read-only commands.
+- [x] **Phase 5: Native Reasoning** - Gemma prompt assembly, GPU offload, balanced JSON extraction.
+- [x] **Phase 6: Long-Term Memory** - ChromaDB vector store with contextual RAG recall.
+- [x] **Phase 7: Autonomous Self-Training** - Background watchdog, delta chunk cursor, 4-bit QLoRA trainer, and dynamic LoRA adapter loading.
 
 ---
 
-*Built as a personal local AI engineering project. No cloud. No tracking. No cost.*
+*Augmented Jackdaw (AJ) is an independent local AI engineering project built by Parimarjan. Completely private, fully local, and self-improving.*
