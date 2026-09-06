@@ -17,7 +17,7 @@ VRAM_BUFFER_GB = 0.5
 USABLE_VRAM_GB = VRAM_LIMIT_GB - VRAM_BUFFER_GB
 
 # LLM Engine Settings
-MODEL_NAME = "gemma-2b-it-GGUF" # Placeholder for the local quantized model path or name
+MODEL_NAME = "gemma-2-2b-it-abliterated-Q4_K_M" # Placeholder for the local quantized model path or name
 MODEL_PATH = MODELS_DIR / f"{MODEL_NAME}.gguf" 
 CONTEXT_WINDOW = 4096
 
