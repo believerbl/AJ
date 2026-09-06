@@ -48,13 +48,23 @@ def run_os_control(command: str, timeout: int = 15) -> str:
             os.unlink(tmp_path)
         else:
             logger.info(f"[os_control] running shell command: {command}")
-            result = subprocess.run(
-                command,
-                shell=True,
-                capture_output=True,
-                text=True,
-                timeout=timeout
-            )
+            # On Windows, run via PowerShell so aliases like ls, pwd, cat work out of the box
+            if os.name == "nt":
+                cmd = ["powershell", "-NoProfile", "-NonInteractive", "-Command", command]
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout
+                )
+            else:
+                result = subprocess.run(
+                    command,
+                    shell=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout
+                )
 
         output = result.stdout
         if result.stderr:

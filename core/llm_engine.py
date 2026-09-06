@@ -127,15 +127,17 @@ class LLMEngine:
         if memory_context:
             user_content += f"\n\n[Memory]\n{memory_context}\n[/Memory]"
 
+        user_content += f"\n\nUser request: {user_input}"
+
         if tool_result:
             remaining = max_tool_calls - tool_call_count
             attempts_str = f"{remaining} attempt{'s' if remaining != 1 else ''} remaining"
             user_content += (
-                f"\n\n[Tool result — call {tool_call_count}/{max_tool_calls}, {attempts_str}]\n"
-                f"{tool_result}\n[/Tool result]"
+                f"\n\n[Tool result - call {tool_call_count}/{max_tool_calls}, {attempts_str}]\n"
+                f"{tool_result}\n[/Tool result]\n\n"
+                "Now use the tool result above to answer the user request in plain text. "
+                "Do not output another tool call unless more info is strictly needed."
             )
-
-        user_content += f"\n\n{user_input}"
 
         parts.append(f"<start_of_turn>user\n{user_content}<end_of_turn>")
         parts.append("<start_of_turn>model\n")  # open slot — no closing tag

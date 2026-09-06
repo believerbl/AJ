@@ -149,14 +149,22 @@ def llm_node(state: AgentState) -> dict:
     print(f"[DEBUG] after extract_json: {repr(cleaned[:200])}")
     is_tool_call = cleaned.startswith("{") and '"tool"' in cleaned
 
+    tool_call_count = state.get("tool_call_count", 0)
     if is_tool_call:
-        try:
-            parsed = json.loads(cleaned)
-            t_name = parsed.get("tool")
-            t_input = parsed.get("input")
-            print(f"[TOOL HIT] LLM produced valid tool call: {t_name}(input={repr(t_input)})")
-        except Exception:
-            pass
+        if tool_call_count >= 3:
+            print(f"[TOOL BUDGET] Maximum tool calls reached ({tool_call_count}/3). Forcing final answer to prevent loop.")
+            is_tool_call = False
+            last_result = state.get("tool_result")
+            if last_result:
+                cleaned = f"Here is the result from the tool execution:\n\n{last_result}"
+        else:
+            try:
+                parsed = json.loads(cleaned)
+                t_name = parsed.get("tool")
+                t_input = parsed.get("input")
+                print(f"[TOOL HIT] LLM produced valid tool call: {t_name}(input={repr(t_input)})")
+            except Exception:
+                pass
 
     return {
         "llm_output": cleaned,
