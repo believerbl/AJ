@@ -1,4 +1,4 @@
-import os
+﻿import os
 from pathlib import Path
 
 # Base Paths
@@ -33,7 +33,12 @@ SCREENSHOT_MAX_SIZE = (1024, 768)
 DATASET_PATH = DATA_DIR / "my_jarvis_data.jsonl"
 IDLE_TIMEOUT_SECONDS = 600 # 10 minutes
 
+# Training chunk settings
+TRAINING_CHUNK_SIZE = 50        # minimum examples before a training run starts
+TRAINING_CURSOR_FILE = DATA_DIR / "training_cursor.json"  # tracks consumed examples
+
 # LoRA Training Settings
 LORA_R = 128
 LORA_TARGET_MODULES = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
 TRAINING_BATCH_SIZE = 1 # Keep low for VRAM limit
+
