@@ -11,7 +11,8 @@ from tools.web_search import run_web_search
 from tools.os_control import run_os_control
 from sensory.vision import VisionPipeline
 from memory.rag_memory import RAGMemory
-from core.llm_engine import LLMEngine
+from core.llm_engine import LLMEngine, SYSTEM_PROMPT
+from core.training_logger import log_interaction, dataset_size
 
 logger = logging.getLogger(__name__)
 
@@ -39,16 +40,23 @@ class AgentState(TypedDict):
 # Utility
 # ---------------------------------------------------------------------------
 
-def strip_markdown(text: str) -> str:
+def extract_json(text: str) -> str:
     """
-    Strip code fences LLMs love wrapping their output in.
-    Applied centrally in llm_node so every downstream function
-    receives clean text - no duplication across tool files.
+    Extracts the first JSON object found in the LLM output, ignoring any
+    conversational filler, markdown fences, or hallucinated prefixes like
+    `_code` that abliterated models love to add before the JSON.
+    Falls back to the stripped text if no JSON block is found.
     """
     text = text.strip()
+    # Strip markdown fences first
     text = re.sub(r"^```[a-zA-Z]*\n?", "", text)
     text = re.sub(r"\n?```$", "", text)
-    return text.strip()
+    text = text.strip()
+    # Hunt for the first { ... } block even if surrounded by garbage
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+    if match:
+        return match.group(0).strip()
+    return text
 
 
 # ---------------------------------------------------------------------------
@@ -112,7 +120,7 @@ def llm_node(state: AgentState) -> dict:
     )
     raw = _engine.generate(prompt)
 
-    cleaned = strip_markdown(raw)
+    cleaned = extract_json(raw)
     is_tool_call = cleaned.startswith("{") and '"tool"' in cleaned
 
     return {
@@ -207,6 +215,13 @@ def approval_node(state: AgentState) -> dict:
 def respond_node(state: AgentState) -> dict:
     logger.info("[respond_node] finalising answer")
     new_message = {"role": "assistant", "content": state["llm_output"]}
+    # Log to training dataset (captures plain-text responses)
+    log_interaction(
+        user_input=state["user_input"],
+        aj_response=state["llm_output"],
+        system_prompt=SYSTEM_PROMPT,
+    )
+    logger.debug(f"[respond_node] training dataset size: {dataset_size()}")
     return {
         "messages": [new_message],
         "screen_capture": None,
