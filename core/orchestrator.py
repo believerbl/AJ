@@ -288,9 +288,6 @@ def build_graph():
 def run_interactive():
     """Simple CLI loop - type your prompt, AJ responds."""
     logging.basicConfig(level=logging.WARNING)  # suppress INFO noise in interactive mode
-    # Silence noisy third-party loggers
-    for noisy in ("hickory_resolver", "primp", "httpx", "urllib3", "ddgs"):
-        logging.getLogger(noisy).setLevel(logging.ERROR)
     app = build_graph()
 
     print("=== Augmented Jackdaw (AJ) - Local AI Agent ===")
