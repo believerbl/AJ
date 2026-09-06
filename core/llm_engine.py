@@ -29,6 +29,8 @@ or any fact useful in future sessions. Be selective - only durable, useful facts
 
 When you have enough information to answer directly, respond in plain text only.
 Do NOT mix JSON with conversational text.
+Do NOT use tools for greetings, identity questions ("who are you"), or anything you can answer from your own knowledge.
+Only use tools when you genuinely need external information or to perform a system action.
 
 Available tools: web_search, os_control, save_memory"""
 
