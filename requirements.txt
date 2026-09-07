@@ -10,3 +10,4 @@ torch
 transformers
 bitsandbytes
 accelerate
+datasets
