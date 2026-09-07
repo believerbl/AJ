@@ -1,5 +1,5 @@
-﻿"""
-AJ Idle Monitor — Phase 7 Watchdog
+"""
+AJ Idle Monitor - Phase 7 Watchdog
 
 Monitors keyboard/mouse inactivity using native Windows APIs (zero extra deps).
 When the system has been idle for `idle_threshold` seconds AND a full chunk of
@@ -13,6 +13,7 @@ Run in a separate terminal:
 
 import json
 import time
+import sys
 import ctypes
 import logging
 import subprocess
@@ -22,7 +23,7 @@ from datetime import datetime
 import config
 
 # ---------------------------------------------------------------------------
-# Logging — all output goes to logs/training_process.log
+# Logging - all output goes to logs/training_process.log
 # ---------------------------------------------------------------------------
 
 LOG_DIR = config.BASE_DIR / "logs"
@@ -78,7 +79,7 @@ def _count_total_examples() -> int:
 
 
 def _get_cursor() -> int:
-    """Read the training cursor — how many examples have already been consumed."""
+    """Read the training cursor - how many examples have already been consumed."""
     path = config.TRAINING_CURSOR_FILE
     if not path.exists():
         return 0
@@ -111,41 +112,47 @@ def start_monitor(idle_threshold: int = 300):
     Kill training the instant the user returns.
     """
     logger.info(f"AJ Idle Monitor started | threshold={idle_threshold}s | chunk={config.TRAINING_CHUNK_SIZE}")
-    print(f"\n[*] Training log → {TRAINING_LOG}")
+    print(f"\n[*] Training log -> {TRAINING_LOG}")
 
     training_proc: subprocess.Popen | None = None
+    last_failure_time: float = 0.0
+    COOLDOWN_ON_ERROR: int = 300  # wait 5 minutes before retrying if trainer crashes
 
     try:
         while True:
             idle_sec = get_idle_seconds()
             ready, new_count = new_examples_available()
 
-            # ── START training ───────────────────────────────────────────────
+            # START training
             if idle_sec >= idle_threshold and training_proc is None:
+                if time.time() - last_failure_time < COOLDOWN_ON_ERROR:
+                    time.sleep(2)
+                    continue
+
                 if ready:
                     logger.info(
                         f"Idle {idle_sec:.0f}s | {new_count} new examples "
-                        f"(≥ chunk size {config.TRAINING_CHUNK_SIZE}) → launching trainer"
+                        f"(>= chunk size {config.TRAINING_CHUNK_SIZE}) -> launching trainer"
                     )
-                    with open(TRAINING_LOG, "a") as lf:
+                    with open(TRAINING_LOG, "a", encoding="utf-8") as lf:
                         lf.write(f"\n{'='*55}\n")
-                        lf.write(f"TRAINING RUN — {datetime.now().isoformat()}\n")
+                        lf.write(f"TRAINING RUN - {datetime.now().isoformat()}\n")
                         lf.write(f"New examples this chunk: {new_count}\n")
                         lf.write(f"{'='*55}\n")
                     training_proc = subprocess.Popen(
-                        ["python", "-m", "core.train_lora"],
-                        stdout=open(TRAINING_LOG, "a"),
+                        [sys.executable, "-m", "core.train_lora"],
+                        stdout=open(TRAINING_LOG, "a", encoding="utf-8"),
                         stderr=subprocess.STDOUT,
                     )
                 else:
                     logger.info(
                         f"Idle {idle_sec:.0f}s but only {new_count}/{config.TRAINING_CHUNK_SIZE} "
-                        "new examples — waiting for a full chunk."
+                        "new examples - waiting for a full chunk."
                     )
 
-            # ── STOP training (user returned) ────────────────────────────────
+            # STOP training (user returned)
             elif idle_sec < 5.0 and training_proc is not None:
-                logger.warning(f"User activity detected (idle={idle_sec:.1f}s) — aborting training")
+                logger.warning(f"User activity detected (idle={idle_sec:.1f}s) - aborting training")
                 training_proc.terminate()
                 try:
                     training_proc.wait(timeout=3)
@@ -154,10 +161,24 @@ def start_monitor(idle_threshold: int = 300):
                 training_proc = None
                 logger.info("Training aborted. VRAM freed. Watching...")
 
-            # ── Training finished on its own ─────────────────────────────────
+            # Training finished on its own
             elif training_proc is not None and training_proc.poll() is not None:
                 rc = training_proc.returncode
-                logger.info(f"Training process finished (exit code {rc}). Watching...")
+                if rc == 0:
+                    logger.info("Training chunk completed successfully (exit code 0). Watching...")
+                else:
+                    logger.error(
+                        f"Trainer exited with code {rc}. See {TRAINING_LOG} for details. "
+                        f"Pausing trainer for {COOLDOWN_ON_ERROR}s to avoid busy-loop."
+                    )
+                    try:
+                        with open(TRAINING_LOG, "r", encoding="utf-8", errors="ignore") as lf:
+                            err_lines = [l.strip() for l in lf.readlines() if l.strip()]
+                            if err_lines:
+                                logger.error(f"Trainer log output: {err_lines[-1]}")
+                    except Exception:
+                        pass
+                    last_failure_time = time.time()
                 training_proc = None
 
             time.sleep(2)
