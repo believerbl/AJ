@@ -1,6 +1,10 @@
 ﻿import hashlib
 import logging
+import warnings
 from typing import Optional
+
+# Suppress ChromaDB internal offline deserialization warnings
+warnings.filterwarnings("ignore", category=UserWarning, module="chromadb")
 
 import chromadb
 from chromadb.utils import embedding_functions
