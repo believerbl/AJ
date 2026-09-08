@@ -1,4 +1,4 @@
-﻿"""
+"""
 AJ LoRA Trainer — Phase 7 Engine
 
 QLoRA fine-tuning on the accumulated interaction data in data/my_jarvis_data.jsonl.
@@ -16,9 +16,16 @@ fine-tuned directly). The LoRA adapter is saved to models/lora_adapter/.
 
 import json
 import logging
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
 import config
 
@@ -123,11 +130,20 @@ def run_training():
         )
         sys.exit(1)
 
+    # Pre-flight check: CUDA required for 4-bit quantization on RTX 2050
+    if not torch.cuda.is_available():
+        logger.error(
+            "CUDA is not available in PyTorch. 4-bit QLoRA training requires an NVIDIA GPU with CUDA.\n"
+            "To install CUDA-enabled PyTorch in your virtual environment, run:\n"
+            "  uv pip install --python .\\venv\\Scripts\\python.exe --reinstall torch --index https://download.pytorch.org/whl/cu121"
+        )
+        sys.exit(1)
+
     # ── 3. Model & tokenizer ─────────────────────────────────────────────────
-    # We load the base HuggingFace model (not GGUF) for fine-tuning.
-    # Use the same family as the GGUF: google/gemma-2-2b-it
-    BASE_MODEL = "google/gemma-2-2b-it"
+    # Configurable base model (defaults to unsloth/gemma-2-2b-it for unauthenticated access)
+    BASE_MODEL = getattr(config, "TRAINING_BASE_MODEL", "unsloth/gemma-2-2b-it")
     ADAPTER_DIR = config.MODELS_DIR / "lora_adapter"
+    hf_token = os.getenv("HF_TOKEN") or os.getenv("HUGGING_FACE_HUB_TOKEN")
 
     logger.info(f"Loading base model: {BASE_MODEL}")
 
@@ -138,13 +154,14 @@ def run_training():
         bnb_4bit_compute_dtype=torch.float16,
     )
 
-    tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL)
+    tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL, token=hf_token)
     tokenizer.pad_token = tokenizer.eos_token
 
     model = AutoModelForCausalLM.from_pretrained(
         BASE_MODEL,
         quantization_config=bnb_config,
         device_map="auto",          # auto-places on RTX 2050
+        token=hf_token,
     )
     model = prepare_model_for_kbit_training(model)
 

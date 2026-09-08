@@ -367,40 +367,43 @@ def run_interactive():
 
     messages: List[dict] = []
 
-    while True:
-        try:
-            user_input = input("You: ").strip()
-        except (EOFError, KeyboardInterrupt):
-            print("\nGoodbye.")
-            break
+    try:
+        while True:
+            try:
+                user_input = input("You: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print("\nGoodbye.")
+                break
 
-        if user_input.lower() in ("exit", "quit", "q"):
-            print("Goodbye.")
-            break
+            if user_input.lower() in ("exit", "quit", "q"):
+                print("Goodbye.")
+                break
 
-        if not user_input:
-            continue
+            if not user_input:
+                continue
 
-        state: AgentState = {
-            "messages": messages,
-            "user_input": user_input,
-            "llm_output": None,
-            "tool_result": None,
-            "screen_capture": None,
-            "memory_context": None,
-            "next_action": "",
-            "pending_approval": None,
-            "tool_call_count": 0,
-        }
+            state: AgentState = {
+                "messages": messages,
+                "user_input": user_input,
+                "llm_output": None,
+                "tool_result": None,
+                "screen_capture": None,
+                "memory_context": None,
+                "next_action": "",
+                "pending_approval": None,
+                "tool_call_count": 0,
+            }
 
-        result = app.invoke(state, config={"recursion_limit": 12})
+            result = app.invoke(state, config={"recursion_limit": 12})
 
-        # Update history with user turn + assistant reply
-        messages.append({"role": "user", "content": user_input})
-        if result["messages"]:
-            reply = result["messages"][-1]["content"]
-            messages.append({"role": "assistant", "content": reply})
-            print(f"\nAJ: {reply}\n")
+            # Update history with user turn + assistant reply
+            messages.append({"role": "user", "content": user_input})
+            if result["messages"]:
+                reply = result["messages"][-1]["content"]
+                messages.append({"role": "assistant", "content": reply})
+                print(f"\nAJ: {reply}\n")
+    finally:
+        _engine.close()
 
 
 if __name__ == "__main__":

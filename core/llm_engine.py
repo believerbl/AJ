@@ -1,9 +1,21 @@
-﻿import logging
+import logging
+import os
+import sys
 from typing import List, Optional
+
+# On Windows, expose bundled CUDA runtime DLLs from torch/lib to ctypes
+if sys.platform == "win32":
+    try:
+        import torch
+        torch_lib = os.path.join(os.path.dirname(torch.__file__), "lib")
+        if os.path.isdir(torch_lib):
+            os.add_dll_directory(torch_lib)
+    except Exception:
+        pass
 
 try:
     from llama_cpp import Llama
-except ImportError:
+except (ImportError, RuntimeError):
     Llama = None
 
 import config
@@ -169,3 +181,12 @@ class LLMEngine:
         except Exception as e:
             logger.error(f"Generation error: {e}")
             return ""
+
+    def close(self):
+        """Explicitly release model from VRAM to ensure clean shutdown."""
+        if self.model is not None:
+            try:
+                self.model.close()
+            except Exception:
+                pass
+            self.model = None

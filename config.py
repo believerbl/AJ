@@ -1,4 +1,4 @@
-﻿import os
+import os
 from pathlib import Path
 
 # Base Paths
@@ -11,6 +11,13 @@ MEMORY_DIR = BASE_DIR / "memory_db"
 for directory in [DATA_DIR, MODELS_DIR, MEMORY_DIR]:
     directory.mkdir(exist_ok=True, parents=True)
 
+# Hugging Face Cache Settings (store on project drive D: to prevent filling up C:)
+HF_CACHE_DIR = MODELS_DIR / ".cache" / "huggingface"
+HF_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+os.environ.setdefault("HF_HOME", str(HF_CACHE_DIR))
+os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+
+
 # Hardware Limits & Configuration
 VRAM_LIMIT_GB = 4.0
 VRAM_BUFFER_GB = 0.5
@@ -22,7 +29,9 @@ MODEL_PATH = MODELS_DIR / f"{MODEL_NAME}.gguf"
 CONTEXT_WINDOW = 8192
 
 # RAG Memory Settings
-EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2" # Runs on CPU
+# Prefer self-contained local embedding weights (prevents offline HuggingFace lookup errors)
+EMBEDDING_MODEL_PATH = MODELS_DIR / "all-MiniLM-L6-v2"
+EMBEDDING_MODEL_NAME = str(EMBEDDING_MODEL_PATH) if EMBEDDING_MODEL_PATH.exists() else "all-MiniLM-L6-v2"
 CHROMA_DB_DIR = str(MEMORY_DIR)
 
 # Sensory (Vision) Settings
@@ -41,4 +50,4 @@ TRAINING_CURSOR_FILE = DATA_DIR / "training_cursor.json"  # tracks consumed exam
 LORA_R = 128
 LORA_TARGET_MODULES = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
 TRAINING_BATCH_SIZE = 1 # Keep low for VRAM limit
-
+TRAINING_BASE_MODEL = os.getenv("TRAINING_BASE_MODEL", "failspy/gemma-2-2b-it-abliterated")

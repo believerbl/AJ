@@ -11,3 +11,4 @@ transformers
 bitsandbytes
 accelerate
 datasets
+python-dotenv
