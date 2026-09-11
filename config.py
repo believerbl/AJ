@@ -14,7 +14,10 @@ for directory in [DATA_DIR, MODELS_DIR, MEMORY_DIR]:
 # Hugging Face Cache Settings (store on project drive D: to prevent filling up C:)
 HF_CACHE_DIR = MODELS_DIR / ".cache" / "huggingface"
 HF_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-os.environ.setdefault("HF_HOME", str(HF_CACHE_DIR))
+os.environ["HF_HOME"] = str(HF_CACHE_DIR)
+os.environ["TORCH_HOME"] = str(MODELS_DIR / ".cache" / "torch")
+os.environ.pop("HF_HUB_OFFLINE", None)
+os.environ.pop("TRANSFORMERS_OFFLINE", None)
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 
 
@@ -47,7 +50,8 @@ TRAINING_CHUNK_SIZE = 50        # minimum examples before a training run starts
 TRAINING_CURSOR_FILE = DATA_DIR / "training_cursor.json"  # tracks consumed examples
 
 # LoRA Training Settings
-LORA_R = 128
+LORA_R = 16
 LORA_TARGET_MODULES = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
 TRAINING_BATCH_SIZE = 1 # Keep low for VRAM limit
-TRAINING_BASE_MODEL = os.getenv("TRAINING_BASE_MODEL", "failspy/gemma-2-2b-it-abliterated")
+TRAINING_BASE_MODEL = os.getenv("TRAINING_BASE_MODEL", "unsloth/gemma-2-2b-it")
+TRAINING_MAX_LENGTH = 1024  # Max sequence length to preserve 4GB VRAM

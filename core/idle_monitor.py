@@ -23,21 +23,23 @@ from datetime import datetime
 import config
 
 # ---------------------------------------------------------------------------
-# Logging - all output goes to logs/training_process.log
+# Logging - idle monitor logs to logs/idle_monitor.log
+# Trainer subprocess writes directly to logs/training_process.log
 # ---------------------------------------------------------------------------
 
 LOG_DIR = config.BASE_DIR / "logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 TRAINING_LOG = LOG_DIR / "training_process.log"
+IDLE_LOG = LOG_DIR / "idle_monitor.log"
 
 logging.basicConfig(
-    filename=str(TRAINING_LOG),
+    filename=str(IDLE_LOG),
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
 )
 logger = logging.getLogger("IdleMonitor")
 
-# Also print key events to terminal so you can see it is alive
+# Print key events to terminal so you can see status in real time
 _console = logging.StreamHandler()
 _console.setLevel(logging.INFO)
 _console.setFormatter(logging.Formatter("[%(asctime)s] %(message)s", "%H:%M:%S"))
@@ -58,7 +60,7 @@ def get_idle_seconds() -> float:
     info.cbSize = ctypes.sizeof(info)
     if ctypes.windll.user32.GetLastInputInfo(ctypes.byref(info)):
         elapsed_ms = ctypes.windll.kernel32.GetTickCount() - info.dwTime
-        return elapsed_ms / 1000.0
+        return max(0.0, elapsed_ms / 1000.0)
     return 0.0
 
 
@@ -97,7 +99,7 @@ def new_examples_available() -> tuple[bool, int]:
     """
     total = _count_total_examples()
     cursor = _get_cursor()
-    new = total - cursor
+    new = max(0, total - cursor)
     ready = new >= config.TRAINING_CHUNK_SIZE
     return ready, new
 
@@ -112,20 +114,30 @@ def start_monitor(idle_threshold: int = 300):
     Kill training the instant the user returns.
     """
     logger.info(f"AJ Idle Monitor started | threshold={idle_threshold}s | chunk={config.TRAINING_CHUNK_SIZE}")
-    print(f"\n[*] Training log -> {TRAINING_LOG}")
+    print(f"[*] Training log -> {TRAINING_LOG}", flush=True)
+    print(f"[*] Monitor log  -> {IDLE_LOG}", flush=True)
 
     training_proc: subprocess.Popen | None = None
     last_failure_time: float = 0.0
     COOLDOWN_ON_ERROR: int = 300  # wait 5 minutes before retrying if trainer crashes
+    was_idle: bool = False
 
     try:
         while True:
             idle_sec = get_idle_seconds()
             ready, new_count = new_examples_available()
 
-            # START training
+            # Track whether system has been idle for at least 60 seconds
+            if idle_sec >= 60.0:
+                was_idle = True
+
+            # ---------------------------------------------------------------
+            # 1. START training (user idle >= threshold and no training active)
+            # ---------------------------------------------------------------
             if idle_sec >= idle_threshold and training_proc is None:
-                if time.time() - last_failure_time < COOLDOWN_ON_ERROR:
+                # Check cooldown if previous run failed
+                elapsed_since_err = time.time() - last_failure_time
+                if elapsed_since_err < COOLDOWN_ON_ERROR:
                     time.sleep(2)
                     continue
 
@@ -150,32 +162,50 @@ def start_monitor(idle_threshold: int = 300):
                         "new examples - waiting for a full chunk."
                     )
 
-            # STOP training (user returned)
-            elif idle_sec < 5.0 and training_proc is not None:
-                logger.warning(f"User activity detected (idle={idle_sec:.1f}s) - aborting training")
-                training_proc.terminate()
-                try:
-                    training_proc.wait(timeout=3)
-                except subprocess.TimeoutExpired:
-                    training_proc.kill()
-                training_proc = None
-                logger.info("Training aborted. VRAM freed. Watching...")
+            # ---------------------------------------------------------------
+            # 2. USER PRESENCE DETECTED (idle_sec < 5.0)
+            # ---------------------------------------------------------------
+            elif idle_sec < 5.0:
+                # Case A: Training is actively running -> abort immediately & free VRAM
+                if training_proc is not None:
+                    logger.warning(f"User activity detected (idle={idle_sec:.1f}s) - aborting training to free VRAM")
+                    training_proc.terminate()
+                    try:
+                        training_proc.wait(timeout=3)
+                    except subprocess.TimeoutExpired:
+                        training_proc.kill()
+                    training_proc = None
+                    logger.info("Training aborted. VRAM freed. Watching...")
+                    was_idle = False
 
-            # Training finished on its own
-            elif training_proc is not None and training_proc.poll() is not None:
+                # Case B: System was idle, user just returned (no trainer running)
+                elif was_idle:
+                    logger.info(f"User presence detected (idle reset to {idle_sec:.1f}s). System is active.")
+                    was_idle = False
+
+            # ---------------------------------------------------------------
+            # 3. Training completed or exited on its own
+            # ---------------------------------------------------------------
+            if training_proc is not None and training_proc.poll() is not None:
                 rc = training_proc.returncode
                 if rc == 0:
-                    logger.info("Training chunk completed successfully (exit code 0). Watching...")
+                    logger.info("Training chunk completed successfully (exit code 0). VRAM freed. Watching...")
                 else:
                     logger.error(
-                        f"Trainer exited with code {rc}. See {TRAINING_LOG} for details. "
+                        f"Trainer exited with code {rc}. See {TRAINING_LOG} for full details. "
                         f"Pausing trainer for {COOLDOWN_ON_ERROR}s to avoid busy-loop."
                     )
+                    # Extract the real traceback from TRAINING_LOG and print to terminal
                     try:
                         with open(TRAINING_LOG, "r", encoding="utf-8", errors="ignore") as lf:
-                            err_lines = [l.strip() for l in lf.readlines() if l.strip()]
-                            if err_lines:
-                                logger.error(f"Trainer log output: {err_lines[-1]}")
+                            err_lines = [l.rstrip() for l in lf.readlines() if l.strip()]
+                            # Grab up to the last 8 lines of the actual error
+                            tb_slice = err_lines[-8:] if len(err_lines) >= 8 else err_lines
+                            if tb_slice:
+                                print("\n[!] --- Trainer Error Output ---", flush=True)
+                                for line in tb_slice:
+                                    print(f"    {line}")
+                                print("[!] ----------------------------\n", flush=True)
                     except Exception:
                         pass
                     last_failure_time = time.time()

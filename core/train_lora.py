@@ -156,6 +156,7 @@ def run_training():
 
     tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL, token=hf_token)
     tokenizer.pad_token = tokenizer.eos_token
+    model.config.pad_token_id = tokenizer.pad_token_id
 
     model = AutoModelForCausalLM.from_pretrained(
         BASE_MODEL,
@@ -190,7 +191,7 @@ def run_training():
     tokenised = tokenizer(
         texts,
         truncation=True,
-        max_length=config.CONTEXT_WINDOW,
+        max_length=getattr(config, "TRAINING_MAX_LENGTH", 1024),
         padding="max_length",
         return_tensors="pt",
     )
