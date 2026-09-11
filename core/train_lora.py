@@ -156,7 +156,6 @@ def run_training():
 
     tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL, token=hf_token)
     tokenizer.pad_token = tokenizer.eos_token
-    model.config.pad_token_id = tokenizer.pad_token_id
 
     model = AutoModelForCausalLM.from_pretrained(
         BASE_MODEL,
@@ -164,6 +163,7 @@ def run_training():
         device_map="auto",          # auto-places on RTX 2050
         token=hf_token,
     )
+    model.config.pad_token_id = tokenizer.pad_token_id
     model = prepare_model_for_kbit_training(model)
 
     # ── 4. LoRA config ───────────────────────────────────────────────────────
