@@ -78,10 +78,14 @@ def load_chunk() -> list[dict]:
                 continue
             try:
                 record = json.loads(line)
-                # Strip _meta before handing to trainer
                 record.pop("_meta", None)
+                messages = record.get("messages")
+                if not isinstance(messages, list) or len(messages) == 0:
+                    continue
+                if not all(isinstance(m, dict) and "role" in m and isinstance(m.get("content"), str) for m in messages):
+                    continue
                 chunk.append(record)
-            except json.JSONDecodeError:
+            except Exception:
                 continue
             if len(chunk) >= chunk_size:
                 break
