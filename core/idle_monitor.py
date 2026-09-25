@@ -108,7 +108,7 @@ def new_examples_available() -> tuple[bool, int]:
 # Main watchdog loop
 # ---------------------------------------------------------------------------
 
-def start_monitor(idle_threshold: int = 300):
+def start_monitor(idle_threshold: int = 210):
     """
     Poll every 2 seconds. Start training when idle + chunk ready.
     Kill training the instant the user returns.
@@ -220,4 +220,4 @@ def start_monitor(idle_threshold: int = 300):
 
 
 if __name__ == "__main__":
-    start_monitor(idle_threshold=300)
+    start_monitor(idle_threshold=210)
