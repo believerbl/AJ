@@ -54,4 +54,4 @@ LORA_R = 16
 LORA_TARGET_MODULES = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
 TRAINING_BATCH_SIZE = 1 # Keep low for VRAM limit
 TRAINING_BASE_MODEL = os.getenv("TRAINING_BASE_MODEL", "unsloth/gemma-2-2b-it")
-TRAINING_MAX_LENGTH = 1024  # Max sequence length to preserve 4GB VRAM
+TRAINING_MAX_LENGTH = 256  # Max sequence length to preserve 4GB VRAM

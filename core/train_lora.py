@@ -211,7 +211,7 @@ def run_training():
         num_train_epochs=1,                  # one pass per chunk
         learning_rate=2e-4,
         fp16=True,
-        logging_steps=5,
+        logging_steps=1,
         save_strategy="no",                  # save manually after run
         optim="paged_adamw_8bit",            # 8-bit optimizer saves ~1 GB VRAM
         report_to="none",
