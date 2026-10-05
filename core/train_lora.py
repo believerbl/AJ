@@ -236,6 +236,29 @@ def run_training():
     tokenizer.save_pretrained(str(ADAPTER_DIR))
     logger.info(f"LoRA adapter saved to {ADAPTER_DIR}")
 
+    # === NEW: Auto-Convert to GGUF ===
+    logger.info("Starting GGUF conversion...")
+    import subprocess
+    import sys
+    llama_cpp_dir = Path(__file__).parent.parent / "tools" / "llama.cpp"
+    if not llama_cpp_dir.exists():
+        logger.info("Cloning llama.cpp for GGUF conversion script...")
+        subprocess.run(["git", "clone", "https://github.com/ggerganov/llama.cpp.git", str(llama_cpp_dir)], check=True)
+        subprocess.run([sys.executable, "-m", "pip", "install", "-r", str(llama_cpp_dir / "requirements.txt")], check=True)
+    
+    convert_script = llama_cpp_dir / "convert_lora_to_gguf.py"
+    gguf_out = ADAPTER_DIR / "adapter_model.gguf"
+    try:
+        subprocess.run([
+            sys.executable, str(convert_script),
+            str(ADAPTER_DIR),
+            "--outfile", str(gguf_out)
+        ], check=True)
+        logger.info(f"Successfully converted LoRA to GGUF: {gguf_out}")
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Failed to convert LoRA to GGUF: {e}")
+    # =================================
+
     new_cursor = cursor_before + len(chunk)
     _write_cursor(new_cursor)
     logger.info(f"Cursor advanced: {cursor_before} → {new_cursor}")

@@ -17,3 +17,5 @@ logs/
 
 # Training cursor and dataset (runtime data)
 data/
+
+tools/llama.cpp/
